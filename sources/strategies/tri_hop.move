@@ -35,7 +35,11 @@ module arb_move::tri_hop {
 
     const E_ZERO_AMOUNT: u64 = 1;
     /// Maximum u64 — used as Aftermath slippage to disable their internal check.
+    /// We rely on profit::assert_profit() for the real profitability guard.
     const MAX_U64: u64 = 18446744073709551615;
+    /// Minimum expected output for Aftermath swaps (defense-in-depth).
+    /// Catches zero-output edge cases (empty pool, overflow) before assert_profit.
+    const AFTERMATH_MIN_OUT: u64 = 1;
 
     // ════════════════════════════════════════════════════════════
     //  All-Cetus triangle: Cetus(A/B) → Cetus(B/C) → Cetus(C/A)
@@ -371,7 +375,7 @@ module arb_move::tri_hop {
         let mut coin_a_out = aftermath_adapter::swap_exact_in<LP, C, A>(
             aftermath_pool, aftermath_registry, aftermath_fee_vault,
             aftermath_treasury, aftermath_insurance, aftermath_referral,
-            coin_c, 0, MAX_U64, ctx,
+            coin_c, AFTERMATH_MIN_OUT, MAX_U64, ctx,
         );
 
         // 4. Validate
@@ -431,7 +435,7 @@ module arb_move::tri_hop {
         let mut coin_a_out = aftermath_adapter::swap_exact_in<LP, C, A>(
             aftermath_pool, aftermath_registry, aftermath_fee_vault,
             aftermath_treasury, aftermath_insurance, aftermath_referral,
-            coin_c, 0, MAX_U64, ctx,
+            coin_c, AFTERMATH_MIN_OUT, MAX_U64, ctx,
         );
 
         // 4. Validate

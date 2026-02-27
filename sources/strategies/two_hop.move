@@ -36,7 +36,11 @@ module arb_move::two_hop {
 
     const E_ZERO_AMOUNT: u64 = 1;
     /// Maximum u64 — used as Aftermath slippage to disable their internal check.
+    /// We rely on profit::assert_profit() for the real profitability guard.
     const MAX_U64: u64 = 18446744073709551615;
+    /// Minimum expected output for Aftermath swaps (defense-in-depth).
+    /// Catches zero-output edge cases (empty pool, overflow) before assert_profit.
+    const AFTERMATH_MIN_OUT: u64 = 1;
 
     // ════════════════════════════════════════════════════════════
     //  Cetus ↔ Turbos
@@ -402,7 +406,7 @@ module arb_move::two_hop {
         let mut coin_a_out = aftermath_adapter::swap_exact_in<LP, B, A>(
             aftermath_pool, aftermath_registry, aftermath_fee_vault,
             aftermath_treasury, aftermath_insurance, aftermath_referral,
-            coin_b, 0, MAX_U64, ctx,
+            coin_b, AFTERMATH_MIN_OUT, MAX_U64, ctx,
         );
 
         // 3. Validate profit
@@ -454,7 +458,7 @@ module arb_move::two_hop {
         let mut coin_b_out = aftermath_adapter::swap_exact_in<LP, A, B>(
             aftermath_pool, aftermath_registry, aftermath_fee_vault,
             aftermath_treasury, aftermath_insurance, aftermath_referral,
-            coin_a, 0, MAX_U64, ctx,
+            coin_a, AFTERMATH_MIN_OUT, MAX_U64, ctx,
         );
 
         // 3. Validate profit
@@ -506,7 +510,7 @@ module arb_move::two_hop {
         let mut coin_a_out = aftermath_adapter::swap_exact_in<LP, B, A>(
             aftermath_pool, aftermath_registry, aftermath_fee_vault,
             aftermath_treasury, aftermath_insurance, aftermath_referral,
-            recv_b, 0, MAX_U64, ctx,
+            recv_b, AFTERMATH_MIN_OUT, MAX_U64, ctx,
         );
 
         // 3. Validate
@@ -552,7 +556,7 @@ module arb_move::two_hop {
         let coin_quote = aftermath_adapter::swap_exact_in<LP, Base, Quote>(
             aftermath_pool, aftermath_registry, aftermath_fee_vault,
             aftermath_treasury, aftermath_insurance, aftermath_referral,
-            borrowed, 0, MAX_U64, ctx,
+            borrowed, AFTERMATH_MIN_OUT, MAX_U64, ctx,
         );
 
         // 3. Buy Base with Quote on DeepBook
