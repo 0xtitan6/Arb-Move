@@ -18,10 +18,17 @@ module arb_move::events {
         amount_in: u64,
         amount_out: u64,
     ) {
+        // Guard against underflow — caller should have validated profit already,
+        // but saturate to 0 rather than abort if something went wrong.
+        let profit = if (amount_out >= amount_in) {
+            amount_out - amount_in
+        } else {
+            0
+        };
         event::emit(ArbExecuted {
             strategy,
             amount_in,
-            profit: amount_out - amount_in,
+            profit,
         });
     }
 }

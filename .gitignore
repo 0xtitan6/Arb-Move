@@ -3,3 +3,7 @@ bot/node_modules/
 bot/dist/
 bot/.env
 deployments/
+
+# Rust bot
+bot-rs/target/
+bot-rs/.env

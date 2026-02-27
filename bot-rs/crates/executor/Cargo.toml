@@ -1,0 +1,18 @@
+[package]
+name = "arb-executor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+arb-types.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+base64.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+blake2b_simd = "1"

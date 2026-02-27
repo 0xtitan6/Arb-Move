@@ -2,15 +2,41 @@
 
 [move]
 version = 3
-manifest_digest = "F6F1D2F7F367F261BDB2ECC58429CB4156BFA1E24D81DC4DF65AF071144A07CE"
-deps_digest = "52B406A7A21811BEF51751CF88DA0E76DAEFFEAC888D4F4060B1A72BBE7D8D35"
+manifest_digest = "C8EEA9C1FFC28C087C547002D79B8A49354A6128A76412F89F40389CE0687EE0"
+deps_digest = "8ADDF07E60EF9ABEFEBFE3115F6D8E269A96EAED8060B41FE1C8B9AB5C34A73C"
 dependencies = [
+  { id = "AftermathAMM", name = "AftermathAMM" },
+  { id = "AmmMath", name = "AmmMath" },
   { id = "CetusClmm", name = "CetusClmm" },
+  { id = "FlowxAMM", name = "FlowxAMM" },
+  { id = "FlowxClmm", name = "FlowxClmm" },
+  { id = "InsuranceFund", name = "InsuranceFund" },
   { id = "MoveStdlib", name = "MoveStdlib" },
+  { id = "ProtocolFeeVault", name = "ProtocolFeeVault" },
+  { id = "ReferralVault", name = "ReferralVault" },
   { id = "Sui", name = "Sui" },
   { id = "SuiSystem", name = "SuiSystem" },
+  { id = "Treasury", name = "Treasury" },
   { id = "TurbosCLMM", name = "TurbosCLMM" },
   { id = "deepbook", name = "deepbook" },
+]
+
+[[move.package]]
+id = "AftermathAMM"
+source = { git = "https://github.com/CetusProtocol/aggregator.git", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782", subdir = "packages/externals/aftermath/aftermath-amm" }
+
+dependencies = [
+  { id = "AmmMath", name = "AmmMath" },
+  { id = "ProtocolFeeVault", name = "ProtocolFeeVault" },
+  { id = "Sui", name = "Sui" },
+]
+
+[[move.package]]
+id = "AmmMath"
+source = { git = "https://github.com/CetusProtocol/aggregator.git", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782", subdir = "packages/externals/aftermath/amm-math" }
+
+dependencies = [
+  { id = "Sui", name = "Sui" },
 ]
 
 [[move.package]]
@@ -20,6 +46,30 @@ source = { git = "https://github.com/CetusProtocol/cetus-clmm-interface.git", re
 dependencies = [
   { id = "IntegerMate", name = "IntegerMate" },
   { id = "MoveSTL", name = "MoveSTL" },
+  { id = "Sui", name = "Sui" },
+]
+
+[[move.package]]
+id = "FlowxAMM"
+source = { git = "https://github.com/CetusProtocol/aggregator.git", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782", subdir = "packages/externals/flowx-amm" }
+
+dependencies = [
+  { id = "Sui", name = "Sui" },
+]
+
+[[move.package]]
+id = "FlowxClmm"
+source = { git = "https://github.com/CetusProtocol/aggregator.git", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782", subdir = "packages/externals/flowx-clmm" }
+
+dependencies = [
+  { id = "Sui", name = "Sui" },
+]
+
+[[move.package]]
+id = "InsuranceFund"
+source = { git = "https://github.com/CetusProtocol/aggregator.git", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782", subdir = "packages/externals/aftermath/amm-insurance-fund" }
+
+dependencies = [
   { id = "Sui", name = "Sui" },
 ]
 
@@ -44,6 +94,26 @@ id = "MoveStdlib"
 source = { git = "https://github.com/MystenLabs/sui.git", rev = "mainnet-v1.54.2", subdir = "crates/sui-framework/packages/move-stdlib" }
 
 [[move.package]]
+id = "ProtocolFeeVault"
+source = { git = "https://github.com/CetusProtocol/aggregator.git", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782", subdir = "packages/externals/aftermath/amm-protocol-fee-vault" }
+
+dependencies = [
+  { id = "InsuranceFund", name = "InsuranceFund" },
+  { id = "ReferralVault", name = "ReferralVault" },
+  { id = "Sui", name = "Sui" },
+  { id = "Treasury", name = "Treasury" },
+  { id = "utilities", name = "utilities" },
+]
+
+[[move.package]]
+id = "ReferralVault"
+source = { git = "https://github.com/CetusProtocol/aggregator.git", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782", subdir = "packages/externals/aftermath/amm-referral-vault" }
+
+dependencies = [
+  { id = "Sui", name = "Sui" },
+]
+
+[[move.package]]
 id = "Sui"
 source = { git = "https://github.com/MystenLabs/sui.git", rev = "mainnet-v1.54.2", subdir = "crates/sui-framework/packages/sui-framework" }
 
@@ -57,6 +127,14 @@ source = { git = "https://github.com/MystenLabs/sui.git", rev = "mainnet-v1.54.2
 
 dependencies = [
   { id = "MoveStdlib", name = "MoveStdlib" },
+  { id = "Sui", name = "Sui" },
+]
+
+[[move.package]]
+id = "Treasury"
+source = { git = "https://github.com/CetusProtocol/aggregator.git", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782", subdir = "packages/externals/aftermath/amm-treasury" }
+
+dependencies = [
   { id = "Sui", name = "Sui" },
 ]
 
@@ -80,6 +158,14 @@ dependencies = [
 [[move.package]]
 id = "token"
 source = { git = "https://github.com/MystenLabs/deepbookv3.git", rev = "26281b9", subdir = "packages/token" }
+
+dependencies = [
+  { id = "Sui", name = "Sui" },
+]
+
+[[move.package]]
+id = "utilities"
+source = { git = "https://github.com/CetusProtocol/aggregator.git", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782", subdir = "packages/externals/aftermath/utility/utilities" }
 
 dependencies = [
   { id = "Sui", name = "Sui" },
