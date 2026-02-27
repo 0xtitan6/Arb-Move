@@ -43,6 +43,11 @@ pub struct Config {
     pub poll_interval_ms: u64,
     pub max_gas_budget: u64,
     pub dry_run_before_submit: bool,
+
+    // ── Circuit breaker ──
+    pub cb_max_consecutive_failures: u32,
+    pub cb_max_cumulative_loss_mist: i64,
+    pub cb_cooldown_ms: u64,
 }
 
 /// Configuration for a single monitored pool.
@@ -107,6 +112,15 @@ impl Config {
             dry_run_before_submit: env_var_or("DRY_RUN_BEFORE_SUBMIT", "true")
                 .parse()
                 .unwrap_or(true),
+            cb_max_consecutive_failures: env_var_or("CB_MAX_CONSECUTIVE_FAILURES", "5")
+                .parse()
+                .context("Invalid CB_MAX_CONSECUTIVE_FAILURES")?,
+            cb_max_cumulative_loss_mist: env_var_or("CB_MAX_CUMULATIVE_LOSS_MIST", "1000000000")
+                .parse()
+                .context("Invalid CB_MAX_CUMULATIVE_LOSS_MIST")?,
+            cb_cooldown_ms: env_var_or("CB_COOLDOWN_MS", "60000")
+                .parse()
+                .context("Invalid CB_COOLDOWN_MS")?,
         })
     }
 }

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use arb_collector::{rpc_poller, DexPackage, PoolCache, RpcPoller, TxEffectStream, WsStream};
-use arb_executor::{Signer, Submitter};
-use arb_strategy::{DryRunner, Scanner, build_local_simulator, ternary_search};
+use arb_executor::{GasMonitor, Signer, Submitter};
+use arb_strategy::{CircuitBreaker, DryRunner, Scanner, build_local_simulator, ternary_search};
 use arb_types::Config;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -42,6 +42,9 @@ async fn main() -> Result<()> {
         poll_ms = %config.poll_interval_ms,
         "Configuration loaded"
     );
+
+    // ── Startup validation ──
+    validate_startup(&config);
 
     // ── Initialize components ──
     let cache = PoolCache::new();
@@ -168,6 +171,27 @@ async fn main() -> Result<()> {
     let poll_interval = Duration::from_millis(config.poll_interval_ms);
     let dry_run_enabled = config.dry_run_before_submit;
 
+    // Gas balance monitor (min 0.1 SUI = 100M MIST to allow trading)
+    let min_gas_balance: u64 = env_var_or_default("MIN_GAS_BALANCE_MIST", 100_000_000);
+    let mut gas_monitor = GasMonitor::new(&config.rpc_url, &sender_address, min_gas_balance);
+    info!(
+        min_balance_sui = %format!("{:.2}", min_gas_balance as f64 / 1_000_000_000.0),
+        "Gas balance monitor initialized"
+    );
+
+    // Circuit breaker
+    let mut circuit_breaker = CircuitBreaker::new(
+        config.cb_max_consecutive_failures,
+        config.cb_max_cumulative_loss_mist,
+        config.cb_cooldown_ms,
+    );
+    info!(
+        max_consec = %config.cb_max_consecutive_failures,
+        max_loss = %config.cb_max_cumulative_loss_mist,
+        cooldown_ms = %config.cb_cooldown_ms,
+        "Circuit breaker initialized"
+    );
+
     let strategy_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(poll_interval);
         let mut total_trades = 0u64;
@@ -179,7 +203,18 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
 
-            // 0. Check collector liveness via heartbeat
+            // 0a. Circuit breaker check
+            if !circuit_breaker.is_trading_allowed(now_ms()) {
+                continue;
+            }
+
+            // 0b. Gas balance check
+            if let Err(e) = gas_monitor.check_balance(now_ms()).await {
+                warn!(error = %e, "Gas balance insufficient — skipping cycle");
+                continue;
+            }
+
+            // 0c. Check collector liveness via heartbeat
             let hb_age = now_ms().saturating_sub(
                 collector_heartbeat.load(Ordering::Relaxed),
             );
@@ -208,11 +243,17 @@ async fn main() -> Result<()> {
                 continue;
             }
 
-            // 2. Scan for opportunities
-            let opportunities = scanner.scan_two_hop(&pools);
+            // 2. Scan for opportunities (two-hop + tri-hop)
+            let mut opportunities = scanner.scan_two_hop(&pools);
+            let tri_opps = scanner.scan_tri_hop(&pools);
+            opportunities.extend(tri_opps);
+
             if opportunities.is_empty() {
                 continue;
             }
+
+            // Re-sort combined opportunities by expected profit
+            opportunities.sort_by(|a, b| b.expected_profit.cmp(&a.expected_profit));
 
             // 3. Process best opportunity (safe: we checked is_empty above)
             let mut best = match opportunities.into_iter().next() {
@@ -304,10 +345,21 @@ async fn main() -> Result<()> {
                     Ok(result) => {
                         total_trades += 1;
                         total_gas += result.gas_cost_mist;
+                        gas_monitor.deduct_gas(result.gas_cost_mist);
                         log_trade_result(&result, &mut total_profit, total_trades, total_gas);
+                        // Report to circuit breaker
+                        if result.success {
+                            let net = result.profit_mist.unwrap_or(0) as i64
+                                - result.gas_cost_mist as i64;
+                            circuit_breaker.record_success(net);
+                        } else {
+                            circuit_breaker
+                                .record_failure(-(result.gas_cost_mist as i64), now_ms());
+                        }
                     }
                     Err(e) => {
                         error!(error = %e, "Transaction submission failed");
+                        circuit_breaker.record_failure(0, now_ms());
                     }
                 }
             } else {
@@ -324,10 +376,21 @@ async fn main() -> Result<()> {
                     Ok(result) => {
                         total_trades += 1;
                         total_gas += result.gas_cost_mist;
+                        gas_monitor.deduct_gas(result.gas_cost_mist);
                         log_trade_result(&result, &mut total_profit, total_trades, total_gas);
+                        // Report to circuit breaker
+                        if result.success {
+                            let net = result.profit_mist.unwrap_or(0) as i64
+                                - result.gas_cost_mist as i64;
+                            circuit_breaker.record_success(net);
+                        } else {
+                            circuit_breaker
+                                .record_failure(-(result.gas_cost_mist as i64), now_ms());
+                        }
                     }
                     Err(e) => {
                         error!(error = %e, "Transaction submission failed");
+                        circuit_breaker.record_failure(0, now_ms());
                     }
                 }
             }
@@ -348,6 +411,14 @@ async fn main() -> Result<()> {
     info!("Bot stopped gracefully.");
 
     Ok(())
+}
+
+/// Read an environment variable with a default, parsing to the target type.
+fn env_var_or_default<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Get current time in milliseconds since Unix epoch.
@@ -413,4 +484,112 @@ fn build_dex_packages(config: &Config) -> Vec<DexPackage> {
     });
 
     packages
+}
+
+/// Validate critical configuration at startup.
+/// Warns on non-fatal issues, errors on blockers.
+fn validate_startup(config: &Config) {
+    let mut warnings = 0u32;
+    let mut errors = 0u32;
+
+    // 1. Package ID must be set (not placeholder)
+    if config.package_id == "0x0" || config.package_id == "0x..." || config.package_id.is_empty() {
+        error!(
+            "PACKAGE_ID is not set ({}) — deploy the Move package first with `sui client publish`",
+            config.package_id
+        );
+        errors += 1;
+    }
+
+    // 2. AdminCap and PauseFlag
+    if config.admin_cap_id == "0x..." || config.admin_cap_id.is_empty() {
+        error!("ADMIN_CAP_ID is not set — required for admin operations");
+        errors += 1;
+    }
+    if config.pause_flag_id == "0x..." || config.pause_flag_id.is_empty() {
+        error!("PAUSE_FLAG_ID is not set — required for all strategy calls");
+        errors += 1;
+    }
+
+    // 3. Monitored pools
+    if config.monitored_pools.is_empty() {
+        error!("MONITORED_POOLS is empty — no pools to monitor. Add pool configs to start trading.");
+        errors += 1;
+    } else {
+        // Validate pool config format
+        for (i, pool) in config.monitored_pools.iter().enumerate() {
+            let valid_dexes = ["cetus", "turbos", "deepbook", "aftermath", "flowx_clmm", "flowx_amm", "flowx"];
+            if !valid_dexes.contains(&pool.dex.to_lowercase().as_str()) {
+                warn!(
+                    pool = %i,
+                    dex = %pool.dex,
+                    "Unknown DEX in pool config — may not be parseable"
+                );
+                warnings += 1;
+            }
+            if !pool.pool_id.starts_with("0x") {
+                warn!(pool = %i, id = %pool.pool_id, "Pool ID doesn't start with 0x");
+                warnings += 1;
+            }
+        }
+
+        // Check for DeepBook pools without DEEP fee coin
+        let has_deepbook = config
+            .monitored_pools
+            .iter()
+            .any(|p| p.dex.to_lowercase() == "deepbook");
+        if has_deepbook
+            && (config.deep_fee_coin_id.is_empty()
+                || config.deep_fee_coin_id == "0x..."
+                || config.deep_fee_coin_id == "0x0")
+        {
+            warn!(
+                "DeepBook pools configured but DEEP_FEE_COIN_ID is not set — \
+                 DeepBook strategies will abort. Get a Coin<DEEP> object: \
+                 `sui client gas --coin-type 0xdeeb...::deep::DEEP`"
+            );
+            warnings += 1;
+        }
+    }
+
+    // 4. DEX shared objects
+    if config.cetus_global_config.is_empty() {
+        warn!("CETUS_GLOBAL_CONFIG not set — Cetus strategies will fail");
+        warnings += 1;
+    }
+    if config.turbos_versioned.is_empty() {
+        warn!("TURBOS_VERSIONED not set — Turbos strategies will fail");
+        warnings += 1;
+    }
+
+    // 5. Strategy params sanity
+    if config.min_profit_mist == 0 {
+        warn!("MIN_PROFIT_MIST is 0 — bot will attempt tiny unprofitable trades");
+        warnings += 1;
+    }
+    if config.max_gas_budget < 10_000_000 {
+        warn!(
+            budget = %config.max_gas_budget,
+            "MAX_GAS_BUDGET is very low — transactions may run out of gas"
+        );
+        warnings += 1;
+    }
+
+    // Summary
+    if errors > 0 {
+        error!(
+            errors = %errors,
+            warnings = %warnings,
+            "⛔ Startup validation found {} critical error(s) — bot will likely fail",
+            errors
+        );
+    } else if warnings > 0 {
+        warn!(
+            warnings = %warnings,
+            "⚠️  Startup validation passed with {} warning(s)",
+            warnings
+        );
+    } else {
+        info!("✅ Startup validation passed — all checks OK");
+    }
 }
