@@ -28,18 +28,14 @@ pub(crate) fn parse_pool_object(
 }
 
 /// Helper: extract a u64 field from Move struct fields.
+/// Handles both string-encoded ("12345") and numeric JSON values.
 pub(crate) fn field_u64(fields: &Value, name: &str) -> Result<u64> {
-    fields
+    let v = fields
         .get(name)
-        .and_then(|v| v.as_str().or_else(|| v.as_u64().map(|_| "").or(None)))
-        .and_then(|s| {
-            if s.is_empty() {
-                fields.get(name).and_then(|v| v.as_u64())
-            } else {
-                s.parse::<u64>().ok()
-            }
-        })
-        .with_context(|| format!("Missing or invalid field: {name}"))
+        .with_context(|| format!("Missing field: {name}"))?;
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        .with_context(|| format!("Invalid u64 field: {name}"))
 }
 
 /// Helper: extract a u128 field from Move struct fields.

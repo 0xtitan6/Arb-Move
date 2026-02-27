@@ -19,13 +19,17 @@ pub(crate) fn parse(content: &Value, meta: &PoolMeta, now_ms: u64) -> Result<Poo
     let sqrt_price = field_u128(fields, "current_sqrt_price").ok();
     let liquidity = field_u128(fields, "liquidity").ok();
 
-    // Cetus tick_index is stored as an I32 struct { bits: u32 }
+    // Cetus tick_index is stored as an I32 struct { bits: u32 } (two's complement).
+    // Handle both unsigned u64 JSON (reinterpret as u32 → i32) and signed i64 JSON.
     let tick_index = fields
         .get("current_tick_index")
         .and_then(|v| v.get("fields"))
         .and_then(|f| f.get("bits"))
-        .and_then(|b| b.as_u64())
-        .map(|bits| bits as i32);
+        .and_then(|b| {
+            b.as_u64()
+                .map(|bits| (bits as u32) as i32)
+                .or_else(|| b.as_i64().map(|v| v as i32))
+        });
 
     let fee_rate = field_u64(fields, "fee_rate").ok();
     // Cetus fee_rate is in 1e6 units (e.g., 2500 = 0.25%)

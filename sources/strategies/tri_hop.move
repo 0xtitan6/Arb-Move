@@ -91,7 +91,7 @@ module arb_move::tri_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"tri_ccc", amount, received);
+        events::emit_arb_executed(b"tri_ccc", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 
@@ -150,7 +150,7 @@ module arb_move::tri_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"tri_cct", amount, received);
+        events::emit_arb_executed(b"tri_cct", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 
@@ -209,7 +209,7 @@ module arb_move::tri_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"tri_ctd", amount, received);
+        events::emit_arb_executed(b"tri_ctd", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 
@@ -267,7 +267,7 @@ module arb_move::tri_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"tri_cdt", amount, received);
+        events::emit_arb_executed(b"tri_cdt", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 
@@ -388,7 +388,7 @@ module arb_move::tri_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"tri_cca", amount, received);
+        events::emit_arb_executed(b"tri_cca", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 
@@ -448,7 +448,7 @@ module arb_move::tri_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"tri_cta", amount, received);
+        events::emit_arb_executed(b"tri_cta", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 
@@ -508,7 +508,7 @@ module arb_move::tri_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"tri_ccf", amount, received);
+        events::emit_arb_executed(b"tri_ccf", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 
@@ -562,7 +562,7 @@ module arb_move::tri_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"tri_cft", amount, received);
+        events::emit_arb_executed(b"tri_cft", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 

@@ -87,7 +87,7 @@ module arb_move::two_hop {
         );
 
         // 5. Emit event + transfer profit
-        events::emit_arb_executed(b"cetus_to_turbos", amount, received);
+        events::emit_arb_executed(b"cetus_to_turbos", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 
@@ -131,7 +131,7 @@ module arb_move::two_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"cetus_to_turbos_rev", amount, received);
+        events::emit_arb_executed(b"cetus_to_turbos_rev", owed, received);
         transfer::public_transfer(coin_b_out, tx_context::sender(ctx));
     }
 
@@ -227,7 +227,7 @@ module arb_move::two_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"cetus_to_deepbook", amount, received);
+        events::emit_arb_executed(b"cetus_to_deepbook", owed, received);
         transfer::public_transfer(base_out, tx_context::sender(ctx));
     }
 
@@ -419,7 +419,7 @@ module arb_move::two_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"cetus_to_aftermath", amount, received);
+        events::emit_arb_executed(b"cetus_to_aftermath", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 
@@ -471,7 +471,7 @@ module arb_move::two_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"cetus_to_aftermath_rev", amount, received);
+        events::emit_arb_executed(b"cetus_to_aftermath_rev", owed, received);
         transfer::public_transfer(coin_b_out, tx_context::sender(ctx));
     }
 
@@ -621,7 +621,7 @@ module arb_move::two_hop {
             receipt,
         );
 
-        events::emit_arb_executed(b"cetus_to_flowx_clmm", amount, received);
+        events::emit_arb_executed(b"cetus_to_flowx_clmm", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 

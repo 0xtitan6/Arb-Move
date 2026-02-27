@@ -42,6 +42,13 @@ module arb_move::admin {
         flag.paused = false;
     }
 
+    /// Transfer AdminCap to a new admin address (e.g., for key rotation or multi-sig).
+    /// Only the current holder can call this — Sui runtime enforces ownership
+    /// since AdminCap is passed by value.
+    entry fun transfer_admin(cap: AdminCap, new_admin: address) {
+        transfer::transfer(cap, new_admin);
+    }
+
     #[test_only]
     public fun create_admin_cap_for_testing(ctx: &mut TxContext): AdminCap {
         AdminCap { id: object::new(ctx) }

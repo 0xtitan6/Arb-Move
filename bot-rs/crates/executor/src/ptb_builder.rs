@@ -139,8 +139,19 @@ impl PtbBuilder {
 
     /// Build the argument list for a specific strategy.
     fn build_args(&self, opp: &ArbOpportunity) -> Result<(Vec<Value>, Vec<String>)> {
+        // Validate pool_ids length matches strategy requirements
+        let expected_pools = if opp.strategy.move_module() == "tri_hop" { 3 } else { 2 };
+        anyhow::ensure!(
+            opp.pool_ids.len() >= expected_pools,
+            "Strategy {:?} requires {} pool IDs, got {}",
+            opp.strategy,
+            expected_pools,
+            opp.pool_ids.len()
+        );
+
         let amount = opp.amount_in.to_string();
-        let min_profit = (opp.expected_profit / 2).to_string(); // 50% buffer
+        // Use 90% of expected_profit as min_profit guard (tight but allows for minor slippage)
+        let min_profit = (opp.expected_profit * 9 / 10).to_string();
 
         let args = match opp.strategy {
             // ═══════════════════════════════════════

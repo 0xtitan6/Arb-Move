@@ -19,12 +19,16 @@ pub(crate) fn parse(content: &Value, meta: &PoolMeta, now_ms: u64) -> Result<Poo
     let sqrt_price = field_u128(fields, "sqrt_price").ok();
     let liquidity = field_u128(fields, "liquidity").ok();
 
+    // Tick index stored as I32 { bits: u32 } (two's complement).
     let tick_index = fields
         .get("tick_current_index")
         .and_then(|v| v.get("fields"))
         .and_then(|f| f.get("bits"))
-        .and_then(|b| b.as_u64())
-        .map(|bits| bits as i32);
+        .and_then(|b| {
+            b.as_u64()
+                .map(|bits| (bits as u32) as i32)
+                .or_else(|| b.as_i64().map(|v| v as i32))
+        });
 
     // On-chain field is "fee" (not "fee_rate"), in 1e6 units (e.g. 3000 = 0.3%)
     // Convert to bps: 3000 / 100 = 30 bps

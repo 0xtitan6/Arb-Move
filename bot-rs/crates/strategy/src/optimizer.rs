@@ -192,31 +192,41 @@ pub fn simulate_clmm_arb(
         return 0;
     }
 
-    // b2a: token B goes in, sqrt_price increases
-    // delta_sqrt = amount_b_in * sqrt_price^2 / L  (approximate: delta_sqrt ≈ after_fee_2 * sqrt_price_2 / L >> 64)
-    // More precisely: new_sqrt = L * old_sqrt / (L - amount_b * old_sqrt >> 64)
-    // Simplified single-tick: delta_sqrt_2 = after_fee_2 << 64 / (L * sqrt_price_2 >> 64)
-    // Then amount_a_out = L * delta_sqrt_2 >> 64
-
-    // Use the reciprocal relationship: for b2a, amount_a_out = L * delta_sqrt / sqrt_price_new
-    let denom = liquidity_2
+    // b2a: token B goes in, sqrt_price increases.
+    // Exact CLMM single-tick formula:
+    //   new_sqrt = L * old_sqrt / (L - delta_b * old_sqrt >> 64)
+    //   amount_a_out = L * (new_sqrt - old_sqrt) >> 64
+    //
+    // Compute: b_times_sqrt = after_fee_2 * sqrt_price_2 / 2^64
+    // using split shifts to avoid overflow.
+    let b_times_sqrt = after_fee_2
         .checked_mul(sqrt_price_2 >> 32)
         .map(|v| v >> 32)
         .unwrap_or(u128::MAX);
 
-    if denom == 0 || denom == u128::MAX {
-        return 0;
+    if b_times_sqrt >= liquidity_2 {
+        return 0; // exceeds single-tick capacity
     }
 
-    // amount_a_out ≈ after_fee_2 * liquidity_2 / (liquidity_2 + after_fee_2 * sqrt_price_2 >> 64)
-    // Simplified constant-liquidity: amount_a_out = after_fee_2 / price_2
-    // where price_2 = (sqrt_price_2 / 2^64)^2
-    let price_2_q128 = (sqrt_price_2 >> 32) * (sqrt_price_2 >> 32); // approximate price in Q64
-    if price_2_q128 == 0 {
-        return 0;
+    let denom = liquidity_2 - b_times_sqrt;
+
+    // new_sqrt = L * old_sqrt / denom (using split multiply to manage overflow)
+    let new_sqrt_2 = liquidity_2
+        .checked_mul(sqrt_price_2 >> 32)
+        .map(|v| v / denom)
+        .map(|v| v << 32)
+        .unwrap_or(0);
+
+    if new_sqrt_2 <= sqrt_price_2 {
+        return 0; // price must increase for b2a
     }
 
-    let amount_a_out = (after_fee_2 << 64) / price_2_q128;
+    // amount_a_out = L * (new_sqrt - old_sqrt) >> 64
+    let delta_sqrt_2 = new_sqrt_2 - sqrt_price_2;
+    let amount_a_out = liquidity_2
+        .checked_mul(delta_sqrt_2)
+        .map(|v| v >> 64)
+        .unwrap_or(0);
 
     if amount_a_out <= amount_in as u128 {
         return 0;
@@ -243,7 +253,7 @@ fn max_trade_amount(pool: &PoolState) -> u64 {
         // CLMM: conservative cap from liquidity at current tick
         Dex::Cetus | Dex::Turbos | Dex::FlowxClmm => {
             pool.liquidity
-                .map(|l| (l >> 32) as u64) // conservative: L / 2^32
+                .map(|l| u64::try_from(l >> 32).unwrap_or(MAX_TRADE_MIST))
                 .unwrap_or(10_000_000_000)
         }
         // DeepBook CLOB: use vault reserves or fallback

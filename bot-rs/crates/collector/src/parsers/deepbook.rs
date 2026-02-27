@@ -38,17 +38,9 @@ pub(crate) fn parse(content: &Value, meta: &PoolMeta, now_ms: u64) -> Result<Poo
 }
 
 /// Try to extract vault balance from nested Move object fields.
+/// Handles both string-encoded and numeric JSON balance values.
 fn extract_vault_balance(fields: &Value, vault_name: &str) -> Option<u64> {
-    fields
-        .get(vault_name)
-        .and_then(|v| v.get("fields"))
-        .and_then(|f| f.get("balance"))
-        .and_then(|b| b.as_str().or_else(|| b.as_u64().map(|_| "")))
-        .and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                s.parse::<u64>().ok()
-            }
-        })
+    let b = fields.get(vault_name)?.get("fields")?.get("balance")?;
+    b.as_u64()
+        .or_else(|| b.as_str().and_then(|s| s.parse::<u64>().ok()))
 }

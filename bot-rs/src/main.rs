@@ -3,9 +3,14 @@ use arb_collector::{rpc_poller, DexPackage, PoolCache, RpcPoller, TxEffectStream
 use arb_executor::{Signer, Submitter};
 use arb_strategy::{DryRunner, Scanner, build_local_simulator, ternary_search};
 use arb_types::Config;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
 use tracing::{debug, error, info, warn};
+
+/// Maximum allowed staleness (ms) for pool data before strategy loop skips a cycle.
+const MAX_POOL_STALENESS_MS: u64 = 10_000; // 10 seconds
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -66,7 +71,11 @@ async fn main() -> Result<()> {
     let ws_mode = std::env::var("WS_MODE")
         .unwrap_or_else(|_| "event".to_string());
 
-    // ── Spawn collector task(s) ──
+    // ── Spawn collector task(s) with supervision ──
+    // Shared counter: collectors bump this on every successful update so the
+    // strategy loop can detect when all collectors have died.
+    let collector_heartbeat = Arc::new(AtomicU64::new(now_ms()));
+
     if use_ws {
         let ws_url = WsStream::ws_url_from_rpc(&config.rpc_url);
         let pool_metas: Vec<_> = config
@@ -81,50 +90,76 @@ async fn main() -> Result<()> {
             .collect();
 
         if ws_mode == "tx" {
-            // Mode 1: Subscribe to transaction effects on monitored pool objects
-            // More reliable — triggers on ANY transaction that modifies the pool
             let tx_stream = TxEffectStream::new(&ws_url, &config.rpc_url, pool_metas);
             let ws_cache = cache.clone();
+            let hb = collector_heartbeat.clone();
             info!(mode = "tx_effects", "Using WebSocket streaming");
 
             tokio::spawn(async move {
-                if let Err(e) = tx_stream.run(ws_cache).await {
-                    error!(error = %e, "TX effect stream failed");
+                loop {
+                    match tx_stream.run(ws_cache.clone()).await {
+                        Ok(()) => {
+                            warn!("TX effect stream ended cleanly — restarting in 3s");
+                        }
+                        Err(e) => {
+                            error!(error = %e, "TX effect stream failed — restarting in 3s");
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    hb.store(now_ms(), Ordering::Relaxed);
                 }
             });
         } else {
-            // Mode 2: Subscribe to DEX package events
-            // Lower latency but may miss some updates
             let dex_packages = build_dex_packages(&config);
             let ws = WsStream::new(&ws_url, &config.rpc_url, dex_packages, pool_metas);
             let ws_cache = cache.clone();
+            let hb = collector_heartbeat.clone();
             info!(mode = "event", "Using WebSocket streaming");
 
             tokio::spawn(async move {
-                if let Err(e) = ws.run(ws_cache).await {
-                    error!(error = %e, "WebSocket event stream failed");
+                loop {
+                    match ws.run(ws_cache.clone()).await {
+                        Ok(()) => {
+                            warn!("WebSocket event stream ended cleanly — restarting in 3s");
+                        }
+                        Err(e) => {
+                            error!(error = %e, "WebSocket event stream failed — restarting in 3s");
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    hb.store(now_ms(), Ordering::Relaxed);
                 }
             });
         }
 
-        // Also run RPC poller as fallback (slower interval)
+        // Also run RPC poller as supervised fallback
         let fallback_cache = cache.clone();
         let poller = RpcPoller::new(&config);
+        let hb = collector_heartbeat.clone();
         info!("RPC poller running as fallback");
 
         tokio::spawn(async move {
-            if let Err(e) = poller.run(fallback_cache).await {
-                error!(error = %e, "Fallback poller failed");
+            loop {
+                if let Err(e) = poller.run(fallback_cache.clone()).await {
+                    error!(error = %e, "Fallback poller failed — restarting in 5s");
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                hb.store(now_ms(), Ordering::Relaxed);
             }
         });
     } else {
-        // Default: RPC polling only
+        // Default: supervised RPC polling
         let collector_cache = cache.clone();
+        let hb = collector_heartbeat.clone();
         info!("Using RPC polling (set USE_WEBSOCKET=true for streaming)");
 
         tokio::spawn(async move {
-            if let Err(e) = poller.run(collector_cache).await {
-                error!(error = %e, "Collector task failed");
+            loop {
+                if let Err(e) = poller.run(collector_cache.clone()).await {
+                    error!(error = %e, "Collector task failed — restarting in 5s");
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                hb.store(now_ms(), Ordering::Relaxed);
             }
         });
     }
@@ -137,16 +172,39 @@ async fn main() -> Result<()> {
         let mut interval = tokio::time::interval(poll_interval);
         let mut total_trades = 0u64;
         let mut total_profit = 0i64;
-        let mut _total_gas = 0u64;
+        let mut total_gas = 0u64;
 
         info!("Strategy loop started ({}ms tick)", poll_interval.as_millis());
 
         loop {
             interval.tick().await;
 
+            // 0. Check collector liveness via heartbeat
+            let hb_age = now_ms().saturating_sub(
+                collector_heartbeat.load(Ordering::Relaxed),
+            );
+            if hb_age > MAX_POOL_STALENESS_MS * 3 {
+                warn!(
+                    stale_ms = %hb_age,
+                    "All collectors appear dead — skipping cycle"
+                );
+                continue;
+            }
+
             // 1. Read pool states from cache
             let pools = cache.snapshot();
             if pools.is_empty() {
+                continue;
+            }
+
+            // 1b. Staleness guard: skip if ALL pools are too old
+            let now = now_ms();
+            let fresh_count = pools
+                .iter()
+                .filter(|p| p.staleness_ms(now) <= MAX_POOL_STALENESS_MS)
+                .count();
+            if fresh_count == 0 {
+                warn!("All pool data is stale — skipping cycle");
                 continue;
             }
 
@@ -162,9 +220,8 @@ async fn main() -> Result<()> {
                 None => continue,
             };
 
-            // 4. Optimize amount via ternary search (local simulation)
-            if best.expected_profit > scanner.min_profit_mist * 2 {
-                // Look up the two pools involved
+            // 4. Always run optimizer via ternary search (local simulation)
+            {
                 let flash_pool = pools.iter().find(|p| p.object_id == best.pool_ids[0]);
                 let sell_pool = pools.iter().find(|p| p.object_id == best.pool_ids[1]);
 
@@ -224,44 +281,54 @@ async fn main() -> Result<()> {
                         continue;
                     }
                 }
-            }
 
-            // 7. Sign and submit
-            let signature = match signer.sign_transaction(&tx_bytes) {
-                Ok(sig) => sig,
-                Err(e) => {
-                    error!(error = %e, "Failed to sign transaction");
-                    continue;
-                }
-            };
+                // 6b. Rebuild PTB with tighter min_profit from dry-run actuals
+                let tx_bytes_final = match ptb_builder.build(&best).await {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        warn!(error = %e, "Failed to rebuild PTB after dry-run");
+                        continue;
+                    }
+                };
 
-            match submitter.submit(&tx_bytes, &signature).await {
-                Ok(result) => {
-                    total_trades += 1;
-                    _total_gas += result.gas_cost_mist;
+                // 7. Sign and submit (dry-run path with rebuilt PTB)
+                let signature = match signer.sign_transaction(&tx_bytes_final) {
+                    Ok(sig) => sig,
+                    Err(e) => {
+                        error!(error = %e, "Failed to sign transaction");
+                        continue;
+                    }
+                };
 
-                    if result.success {
-                        let profit = result.profit_mist.unwrap_or(0);
-                        total_profit += profit as i64 - result.gas_cost_mist as i64;
-
-                        info!(
-                            digest = %result.digest,
-                            profit = %profit,
-                            gas = %result.gas_cost_mist,
-                            total_trades = %total_trades,
-                            total_profit = %total_profit,
-                            "✅ Arb executed successfully"
-                        );
-                    } else {
-                        warn!(
-                            digest = %result.digest,
-                            error = ?result.error_message,
-                            "❌ Transaction failed on-chain"
-                        );
+                match submitter.submit(&tx_bytes_final, &signature).await {
+                    Ok(result) => {
+                        total_trades += 1;
+                        total_gas += result.gas_cost_mist;
+                        log_trade_result(&result, &mut total_profit, total_trades, total_gas);
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Transaction submission failed");
                     }
                 }
-                Err(e) => {
-                    error!(error = %e, "Transaction submission failed");
+            } else {
+                // 7. Sign and submit (no dry-run path)
+                let signature = match signer.sign_transaction(&tx_bytes) {
+                    Ok(sig) => sig,
+                    Err(e) => {
+                        error!(error = %e, "Failed to sign transaction");
+                        continue;
+                    }
+                };
+
+                match submitter.submit(&tx_bytes, &signature).await {
+                    Ok(result) => {
+                        total_trades += 1;
+                        total_gas += result.gas_cost_mist;
+                        log_trade_result(&result, &mut total_profit, total_trades, total_gas);
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Transaction submission failed");
+                    }
                 }
             }
         }
@@ -281,6 +348,43 @@ async fn main() -> Result<()> {
     info!("Bot stopped gracefully.");
 
     Ok(())
+}
+
+/// Get current time in milliseconds since Unix epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Log a trade result and update running totals.
+fn log_trade_result(
+    result: &arb_executor::SubmitResult,
+    total_profit: &mut i64,
+    total_trades: u64,
+    total_gas: u64,
+) {
+    if result.success {
+        let profit = result.profit_mist.unwrap_or(0);
+        *total_profit += profit as i64 - result.gas_cost_mist as i64;
+
+        info!(
+            digest = %result.digest,
+            profit = %profit,
+            gas = %result.gas_cost_mist,
+            total_trades = %total_trades,
+            total_profit = %total_profit,
+            total_gas = %total_gas,
+            "✅ Arb executed successfully"
+        );
+    } else {
+        warn!(
+            digest = %result.digest,
+            error = ?result.error_message,
+            "❌ Transaction failed on-chain"
+        );
+    }
 }
 
 /// Build the list of DEX package IDs to subscribe to from config.
