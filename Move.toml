@@ -1,6 +1,6 @@
 [package]
 name = "ArbMove"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024.beta"
 
 [dependencies]
@@ -10,6 +10,21 @@ SuiSystem = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/su
 CetusClmm = { git = "https://github.com/CetusProtocol/cetus-clmm-interface.git", subdir = "sui/clmmpool", rev = "1f6a1cc79ec540d7219d8da1dd16e5cce140dfd8" }
 TurbosCLMM = { git = "https://github.com/turbos-finance/turbos-sui-move-interface.git", subdir = "clmm", rev = "cff693265bfc41c7de2233afe31c9d7428adc9e1" }
 deepbook = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/deepbook", rev = "26281b9" }
+# Aftermath Finance (via Cetus aggregator interface stubs)
+AftermathAMM = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = "packages/externals/aftermath/aftermath-amm", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782" }
+ProtocolFeeVault = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = "packages/externals/aftermath/amm-protocol-fee-vault", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782" }
+InsuranceFund = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = "packages/externals/aftermath/amm-insurance-fund", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782" }
+ReferralVault = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = "packages/externals/aftermath/amm-referral-vault", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782" }
+Treasury = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = "packages/externals/aftermath/amm-treasury", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782" }
+AmmMath = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = "packages/externals/aftermath/amm-math", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782" }
+# FlowX Finance (via Cetus aggregator interface stubs)
+FlowxClmm = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = "packages/externals/flowx-clmm", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782" }
+# FlowX AMM v2 (via Cetus aggregator stubs — Container type only)
+# NOTE: The FlowX AMM router is not exposed in stubs. FlowX AMM integration
+# requires PTB-level composition (off-chain). Skipped for on-chain adapters.
+# FlowxAMM is still included so strategies can reference the Container type
+# if needed in future upgrades.
+FlowxAMM = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = "packages/externals/flowx-amm", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782" }
 
 [addresses]
 arb_move = "0x0"

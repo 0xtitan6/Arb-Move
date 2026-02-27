@@ -1,0 +1,84 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/types",
+    "crates/collector",
+    "crates/strategy",
+    "crates/executor",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal crates
+arb-types = { path = "crates/types" }
+arb-collector = { path = "crates/collector" }
+arb-strategy = { path = "crates/strategy" }
+arb-executor = { path = "crates/executor" }
+
+# Sui SDK (modular — lighter than the monolithic sui-sdk)
+sui-sdk-types = "0.0.4"
+sui-graphql-client = "0.0.4"
+sui-transaction-builder = "0.0.4"
+sui-crypto = "0.0.3"
+bcs = "0.1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client (for direct JSON-RPC calls — faster than GraphQL for hot path)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Concurrency
+dashmap = "6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Environment
+dotenvy = "0.15"
+
+# Signing (fallback if sui-crypto unavailable)
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+
+# Hex encoding
+hex = "0.4"
+
+# Base64
+base64 = "0.22"
+
+# WebSocket (for event streaming)
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
+url = "2"
+
+[package]
+name = "arb-bot"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+arb-types.workspace = true
+arb-collector.workspace = true
+arb-strategy.workspace = true
+arb-executor.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+dotenvy.workspace = true
+dashmap.workspace = true
+serde_json.workspace = true
