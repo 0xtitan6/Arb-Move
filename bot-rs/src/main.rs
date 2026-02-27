@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arb_collector::{rpc_poller, DexPackage, PoolCache, RpcPoller, TxEffectStream, WsStream};
-use arb_executor::{GasMonitor, Signer, Submitter};
+use arb_executor::{CoinMerger, GasMonitor, Signer, Submitter};
 use arb_strategy::{CircuitBreaker, DryRunner, Scanner, build_local_simulator, ternary_search};
 use arb_types::Config;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -179,6 +179,10 @@ async fn main() -> Result<()> {
         "Gas balance monitor initialized"
     );
 
+    // Coin dust merger (consolidates fragmented Coin<SUI> objects)
+    let mut coin_merger = CoinMerger::new(&config.rpc_url, &sender_address);
+    info!("Coin merger initialized (threshold: 20 coins, check every ~50s)");
+
     // Circuit breaker
     let mut circuit_breaker = CircuitBreaker::new(
         config.cb_max_consecutive_failures,
@@ -214,7 +218,31 @@ async fn main() -> Result<()> {
                 continue;
             }
 
-            // 0c. Check collector liveness via heartbeat
+            // 0c. Periodic coin dust merge
+            if let Ok(Some(merge_tx)) = coin_merger.maybe_merge().await {
+                match signer.sign_transaction(&merge_tx) {
+                    Ok(sig) => {
+                        match submitter.submit(&merge_tx, &sig).await {
+                            Ok(result) => {
+                                if result.success {
+                                    info!(
+                                        digest = %result.digest,
+                                        gas = %result.gas_cost_mist,
+                                        "Coin merge successful"
+                                    );
+                                    gas_monitor.deduct_gas(result.gas_cost_mist);
+                                } else {
+                                    warn!(error = ?result.error_message, "Coin merge failed on-chain");
+                                }
+                            }
+                            Err(e) => warn!(error = %e, "Coin merge submission failed"),
+                        }
+                    }
+                    Err(e) => warn!(error = %e, "Failed to sign merge transaction"),
+                }
+            }
+
+            // 0d. Check collector liveness via heartbeat
             let hb_age = now_ms().saturating_sub(
                 collector_heartbeat.load(Ordering::Relaxed),
             );
