@@ -16,3 +16,4 @@ base64.workspace = true
 ed25519-dalek.workspace = true
 rand.workspace = true
 blake2b_simd = "1"
+bech32.workspace = true

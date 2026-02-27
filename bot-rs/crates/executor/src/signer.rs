@@ -14,9 +14,28 @@ pub struct Signer {
 }
 
 impl Signer {
-    /// Create a signer from a hex-encoded 32-byte private key.
-    /// Accepts with or without "0x" prefix.
-    pub fn from_hex(hex_key: &str) -> Result<Self> {
+    /// Create a signer from a private key string.
+    /// Accepts:
+    /// - Hex-encoded 32-byte key (with or without "0x" prefix)
+    /// - Sui bech32-encoded key (`suiprivkey1q...`)
+    pub fn from_hex(key: &str) -> Result<Self> {
+        let key_bytes = if key.starts_with("suiprivkey") {
+            Self::decode_bech32(key)?
+        } else {
+            Self::decode_hex(key)?
+        };
+
+        let signing_key = SigningKey::from_bytes(&key_bytes);
+        let verifying_key = signing_key.verifying_key();
+
+        Ok(Self {
+            signing_key,
+            verifying_key,
+        })
+    }
+
+    /// Decode a hex-encoded private key (with or without "0x" prefix).
+    fn decode_hex(hex_key: &str) -> Result<[u8; 32]> {
         let clean = hex_key.strip_prefix("0x").unwrap_or(hex_key);
         let bytes = hex::decode(clean).context("Invalid hex private key")?;
 
@@ -29,14 +48,34 @@ impl Signer {
 
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(&bytes);
+        Ok(key_bytes)
+    }
 
-        let signing_key = SigningKey::from_bytes(&key_bytes);
-        let verifying_key = signing_key.verifying_key();
+    /// Decode a Sui bech32-encoded private key (`suiprivkey1q...`).
+    /// Format: bech32(hrp="suiprivkey", data = flag_byte || 32_byte_key)
+    fn decode_bech32(bech32_key: &str) -> Result<[u8; 32]> {
+        let (_hrp, data) =
+            bech32::decode(bech32_key).context("Invalid bech32 private key")?;
 
-        Ok(Self {
-            signing_key,
-            verifying_key,
-        })
+        // data = 1-byte flag + 32-byte key
+        if data.len() != 33 {
+            anyhow::bail!(
+                "Bech32 key data must be 33 bytes (1 flag + 32 key), got {}",
+                data.len()
+            );
+        }
+
+        let flag = data[0];
+        if flag != 0x00 {
+            anyhow::bail!(
+                "Expected Ed25519 flag (0x00), got 0x{:02x}. Only Ed25519 keys are supported.",
+                flag
+            );
+        }
+
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&data[1..]);
+        Ok(key_bytes)
     }
 
     /// Get the Sui address derived from this key.
@@ -99,8 +138,7 @@ mod tests {
     #[test]
     fn test_signer_from_hex() {
         // Generate a test key
-        let key_hex = "0x" .to_string()
-            + &hex::encode([42u8; 32]);
+        let key_hex = "0x".to_string() + &hex::encode([42u8; 32]);
         let signer = Signer::from_hex(&key_hex).unwrap();
         let addr = signer.address();
         assert!(addr.starts_with("0x"));
@@ -111,5 +149,38 @@ mod tests {
     fn test_signer_rejects_invalid_key() {
         assert!(Signer::from_hex("0xabc").is_err()); // too short
         assert!(Signer::from_hex("not_hex").is_err());
+    }
+
+    #[test]
+    fn test_signer_from_bech32() {
+        // Encode a known key in bech32 format: suiprivkey + flag(0x00) + 32 bytes
+        let mut data = vec![0x00u8]; // Ed25519 flag
+        data.extend_from_slice(&[42u8; 32]); // key bytes
+        let encoded = bech32::encode::<bech32::Bech32>(
+            bech32::Hrp::parse("suiprivkey").unwrap(),
+            &data,
+        ).unwrap();
+
+        let signer = Signer::from_hex(&encoded).unwrap();
+        let addr = signer.address();
+        assert!(addr.starts_with("0x"));
+        assert_eq!(addr.len(), 66);
+
+        // Should produce same address as hex version
+        let hex_signer = Signer::from_hex(&("0x".to_string() + &hex::encode([42u8; 32]))).unwrap();
+        assert_eq!(signer.address(), hex_signer.address());
+    }
+
+    #[test]
+    fn test_signer_rejects_non_ed25519_bech32() {
+        // flag = 0x01 (not Ed25519)
+        let mut data = vec![0x01u8];
+        data.extend_from_slice(&[42u8; 32]);
+        let encoded = bech32::encode::<bech32::Bech32>(
+            bech32::Hrp::parse("suiprivkey").unwrap(),
+            &data,
+        ).unwrap();
+
+        assert!(Signer::from_hex(&encoded).is_err());
     }
 }

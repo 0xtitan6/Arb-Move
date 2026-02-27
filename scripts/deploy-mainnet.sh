@@ -41,7 +41,7 @@ echo "Deployer address:  $ADDR"
 # Check balance (need at least ~0.5 SUI for publish)
 echo ""
 echo "Checking SUI balance..."
-BALANCE_OUTPUT=$(sui client gas --json 2>&1 || echo "[]")
+BALANCE_OUTPUT=$(sui client gas --json 2>/dev/null || echo "[]")
 TOTAL_BALANCE=$(echo "$BALANCE_OUTPUT" | jq '[.[].mistBalance] | add // 0' 2>/dev/null || echo "0")
 TOTAL_SUI=$(echo "scale=4; $TOTAL_BALANCE / 1000000000" | bc 2>/dev/null || echo "unknown")
 
