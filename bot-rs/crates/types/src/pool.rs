@@ -118,3 +118,140 @@ pub struct PoolPair {
     pub pool_a: PoolState,
     pub pool_b: PoolState,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_pool(dex: Dex) -> PoolState {
+        PoolState {
+            object_id: "0x1".into(),
+            dex,
+            coin_type_a: "SUI".into(),
+            coin_type_b: "USDC".into(),
+            sqrt_price: None,
+            tick_index: None,
+            liquidity: None,
+            fee_rate_bps: None,
+            reserve_a: None,
+            reserve_b: None,
+            best_bid: None,
+            best_ask: None,
+            last_updated_ms: 1000,
+        }
+    }
+
+    // ── price_a_in_b tests ──
+
+    #[test]
+    fn test_clmm_price_from_sqrt_price() {
+        let mut p = base_pool(Dex::Cetus);
+        p.sqrt_price = Some(1u128 << 64); // sqrt_price = 1.0 in Q64.64
+        let price = p.price_a_in_b().unwrap();
+        assert!((price - 1.0).abs() < 0.01, "price should be ~1.0, got {price}");
+    }
+
+    #[test]
+    fn test_clmm_price_sqrt_2() {
+        // sqrt(2) * 2^64 ≈ 26087635650665564424 → price ≈ 2.0
+        let mut p = base_pool(Dex::Turbos);
+        p.sqrt_price = Some(26_087_635_650_665_564_424);
+        let price = p.price_a_in_b().unwrap();
+        assert!((price - 2.0).abs() < 0.01, "price should be ~2.0, got {price}");
+    }
+
+    #[test]
+    fn test_clmm_price_none_when_no_sqrt() {
+        let p = base_pool(Dex::FlowxClmm);
+        assert!(p.price_a_in_b().is_none());
+    }
+
+    #[test]
+    fn test_amm_price_from_reserves() {
+        let mut p = base_pool(Dex::Aftermath);
+        p.reserve_a = Some(1_000_000_000);
+        p.reserve_b = Some(3_000_000);
+        let price = p.price_a_in_b().unwrap();
+        assert!((price - 0.003).abs() < 0.0001, "got {price}");
+    }
+
+    #[test]
+    fn test_amm_price_none_when_zero_reserve_a() {
+        let mut p = base_pool(Dex::FlowxAmm);
+        p.reserve_a = Some(0);
+        p.reserve_b = Some(1_000);
+        assert!(p.price_a_in_b().is_none());
+    }
+
+    #[test]
+    fn test_amm_price_none_when_no_reserves() {
+        assert!(base_pool(Dex::Aftermath).price_a_in_b().is_none());
+    }
+
+    #[test]
+    fn test_deepbook_price_midpoint() {
+        let mut p = base_pool(Dex::DeepBook);
+        p.best_bid = Some(2.0);
+        p.best_ask = Some(3.0);
+        assert!((p.price_a_in_b().unwrap() - 2.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_deepbook_price_bid_only() {
+        let mut p = base_pool(Dex::DeepBook);
+        p.best_bid = Some(2.5);
+        assert!((p.price_a_in_b().unwrap() - 2.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_deepbook_price_ask_only() {
+        let mut p = base_pool(Dex::DeepBook);
+        p.best_ask = Some(3.0);
+        assert!((p.price_a_in_b().unwrap() - 3.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_deepbook_price_fallback_to_reserves() {
+        let mut p = base_pool(Dex::DeepBook);
+        p.reserve_a = Some(1_000);
+        p.reserve_b = Some(2_000);
+        assert!((p.price_a_in_b().unwrap() - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_deepbook_price_none_no_data() {
+        assert!(base_pool(Dex::DeepBook).price_a_in_b().is_none());
+    }
+
+    // ── supports_flash_swap ──
+
+    #[test]
+    fn test_flash_swap_support() {
+        assert!(base_pool(Dex::Cetus).supports_flash_swap());
+        assert!(base_pool(Dex::Turbos).supports_flash_swap());
+        assert!(base_pool(Dex::DeepBook).supports_flash_swap());
+        assert!(base_pool(Dex::FlowxClmm).supports_flash_swap());
+        assert!(!base_pool(Dex::Aftermath).supports_flash_swap());
+        assert!(!base_pool(Dex::FlowxAmm).supports_flash_swap());
+    }
+
+    // ── staleness_ms ──
+
+    #[test]
+    fn test_staleness_ms() {
+        let p = base_pool(Dex::Cetus);
+        assert_eq!(p.staleness_ms(5000), 4000);
+        assert_eq!(p.staleness_ms(1000), 0);
+        assert_eq!(p.staleness_ms(500), 0); // saturating_sub
+    }
+
+    // ── Dex Display ──
+
+    #[test]
+    fn test_dex_display() {
+        assert_eq!(format!("{}", Dex::Cetus), "Cetus");
+        assert_eq!(format!("{}", Dex::DeepBook), "DeepBook");
+        assert_eq!(format!("{}", Dex::FlowxClmm), "FlowX CLMM");
+        assert_eq!(format!("{}", Dex::FlowxAmm), "FlowX AMM");
+    }
+}

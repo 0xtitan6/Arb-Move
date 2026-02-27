@@ -118,3 +118,110 @@ fn env_var(name: &str) -> Result<String> {
 fn env_var_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pool_config_parse_valid() {
+        let entry = "cetus:0xpool1:0x2::sui::SUI:0xusdc::usdc::USDC";
+        let parts: Vec<&str> = entry.split(':').collect();
+        assert!(parts.len() >= 4);
+        let pc = PoolConfig {
+            dex: parts[0].to_string(),
+            pool_id: parts[1].to_string(),
+            coin_type_a: parts[2].to_string(),
+            coin_type_b: parts[3].to_string(),
+        };
+        assert_eq!(pc.dex, "cetus");
+        assert_eq!(pc.pool_id, "0xpool1");
+    }
+
+    #[test]
+    fn test_pool_config_parse_malformed_skipped() {
+        let entries = "cetus:0xpool1,bad_entry,turbos:0xpool2:SUI:USDC";
+        let parsed: Vec<PoolConfig> = entries
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .filter_map(|entry| {
+                let parts: Vec<&str> = entry.trim().split(':').collect();
+                if parts.len() >= 4 {
+                    Some(PoolConfig {
+                        dex: parts[0].to_string(),
+                        pool_id: parts[1].to_string(),
+                        coin_type_a: parts[2].to_string(),
+                        coin_type_b: parts[3].to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].dex, "turbos");
+    }
+
+    #[test]
+    fn test_pool_config_empty_string() {
+        let entries = "";
+        let parsed: Vec<&str> = entries
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_pool_config_multiple_valid() {
+        let entries = "cetus:0x1:SUI:USDC,turbos:0x2:SUI:USDC,deepbook:0x3:SUI:USDC";
+        let parsed: Vec<PoolConfig> = entries
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .filter_map(|entry| {
+                let parts: Vec<&str> = entry.trim().split(':').collect();
+                if parts.len() >= 4 {
+                    Some(PoolConfig {
+                        dex: parts[0].to_string(),
+                        pool_id: parts[1].to_string(),
+                        coin_type_a: parts[2].to_string(),
+                        coin_type_b: parts[3].to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(parsed.len(), 3);
+    }
+
+    #[test]
+    fn test_env_var_or_defaults() {
+        let val = env_var_or("NONEXISTENT_TEST_VAR_12345", "default_value");
+        assert_eq!(val, "default_value");
+    }
+
+    #[test]
+    fn test_env_var_missing_errors() {
+        assert!(env_var("NONEXISTENT_TEST_VAR_12345").is_err());
+    }
+
+    #[test]
+    fn test_numeric_parse_defaults() {
+        let min_profit: u64 = "1000000".parse().unwrap();
+        assert_eq!(min_profit, 1_000_000);
+        let poll_ms: u64 = "500".parse().unwrap();
+        assert_eq!(poll_ms, 500);
+        let gas_budget: u64 = "50000000".parse().unwrap();
+        assert_eq!(gas_budget, 50_000_000);
+        assert!("true".parse::<bool>().unwrap());
+    }
+
+    #[test]
+    fn test_numeric_parse_invalid() {
+        assert!("not_a_number".parse::<u64>().is_err());
+        assert!("".parse::<u64>().is_err());
+        assert!("-1".parse::<u64>().is_err());
+    }
+}

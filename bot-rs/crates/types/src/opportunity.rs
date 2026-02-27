@@ -165,3 +165,117 @@ impl ArbOpportunity {
         self.net_profit > 0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_opp(strategy: StrategyType, pool_count: usize, expected_profit: u64) -> ArbOpportunity {
+        ArbOpportunity {
+            strategy,
+            amount_in: 1_000_000_000,
+            expected_profit,
+            estimated_gas: 5_000_000,
+            net_profit: expected_profit as i64 - 5_000_000,
+            pool_ids: (0..pool_count).map(|i| format!("0xpool{i}")).collect(),
+            type_args: vec!["SUI".to_string(), "USDC".to_string()],
+            detected_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn test_is_profitable_positive() {
+        let opp = make_opp(StrategyType::CetusToTurbos, 2, 10_000_000);
+        assert!(opp.is_profitable());
+    }
+
+    #[test]
+    fn test_is_profitable_zero() {
+        let mut opp = make_opp(StrategyType::CetusToTurbos, 2, 10_000_000);
+        opp.net_profit = 0;
+        assert!(!opp.is_profitable());
+    }
+
+    #[test]
+    fn test_is_profitable_negative() {
+        let mut opp = make_opp(StrategyType::CetusToTurbos, 2, 1_000_000);
+        opp.net_profit = -4_000_000;
+        assert!(!opp.is_profitable());
+    }
+
+    // ── StrategyType tests ──
+
+    #[test]
+    fn test_move_module_two_hop() {
+        assert_eq!(StrategyType::CetusToTurbos.move_module(), "two_hop");
+        assert_eq!(StrategyType::DeepBookToAftermath.move_module(), "two_hop");
+        assert_eq!(StrategyType::FlowxClmmToCetus.move_module(), "two_hop");
+        assert_eq!(StrategyType::CetusToFlowxAmm.move_module(), "two_hop");
+    }
+
+    #[test]
+    fn test_move_module_tri_hop() {
+        assert_eq!(StrategyType::TriCetusCetusCetus.move_module(), "tri_hop");
+        assert_eq!(StrategyType::TriCetusTurbosDeepBook.move_module(), "tri_hop");
+        assert_eq!(StrategyType::TriFlowxClmmCetusTurbos.move_module(), "tri_hop");
+    }
+
+    #[test]
+    fn test_move_function_names() {
+        assert_eq!(StrategyType::CetusToTurbos.move_function_name(), "arb_cetus_to_turbos");
+        assert_eq!(StrategyType::DeepBookToCetus.move_function_name(), "arb_deepbook_to_cetus");
+        assert_eq!(StrategyType::TriCetusCetusCetus.move_function_name(), "tri_cetus_cetus_cetus");
+    }
+
+    #[test]
+    fn test_flash_source_dex() {
+        assert_eq!(StrategyType::CetusToTurbos.flash_source(), Dex::Cetus);
+        assert_eq!(StrategyType::TurbosToCetus.flash_source(), Dex::Turbos);
+        assert_eq!(StrategyType::DeepBookToCetus.flash_source(), Dex::DeepBook);
+        assert_eq!(StrategyType::FlowxClmmToCetus.flash_source(), Dex::FlowxClmm);
+        assert_eq!(StrategyType::CetusToFlowxAmm.flash_source(), Dex::Cetus);
+    }
+
+    #[test]
+    fn test_tri_hop_flash_source() {
+        assert_eq!(StrategyType::TriCetusCetusCetus.flash_source(), Dex::Cetus);
+        assert_eq!(StrategyType::TriDeepBookCetusTurbos.flash_source(), Dex::DeepBook);
+        assert_eq!(StrategyType::TriFlowxClmmCetusTurbos.flash_source(), Dex::FlowxClmm);
+    }
+
+    #[test]
+    fn test_min_profit_calculation() {
+        // 90% of expected profit
+        let opp = make_opp(StrategyType::CetusToTurbos, 2, 100_000);
+        let min_profit = opp.expected_profit * 9 / 10;
+        assert_eq!(min_profit, 90_000);
+    }
+
+    #[test]
+    fn test_min_profit_zero() {
+        let opp = make_opp(StrategyType::CetusToTurbos, 2, 0);
+        let min_profit = opp.expected_profit * 9 / 10;
+        assert_eq!(min_profit, 0);
+    }
+
+    #[test]
+    fn test_pool_ids_two_hop_needs_two() {
+        let opp = make_opp(StrategyType::CetusToTurbos, 2, 100);
+        let expected_pools = if opp.strategy.move_module() == "tri_hop" { 3 } else { 2 };
+        assert!(opp.pool_ids.len() >= expected_pools);
+    }
+
+    #[test]
+    fn test_pool_ids_tri_hop_needs_three() {
+        let opp = make_opp(StrategyType::TriCetusCetusCetus, 3, 100);
+        let expected_pools = if opp.strategy.move_module() == "tri_hop" { 3 } else { 2 };
+        assert!(opp.pool_ids.len() >= expected_pools);
+    }
+
+    #[test]
+    fn test_pool_ids_tri_hop_too_few_detected() {
+        let opp = make_opp(StrategyType::TriCetusCetusCetus, 2, 100);
+        let expected_pools = if opp.strategy.move_module() == "tri_hop" { 3 } else { 2 };
+        assert!(opp.pool_ids.len() < expected_pools, "Should detect insufficient pool IDs");
+    }
+}

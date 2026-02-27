@@ -377,4 +377,273 @@ mod tests {
         );
         assert_eq!(profit, 0, "Same prices should not be profitable");
     }
+
+    // ══════════════════════════════════════════════
+    //  XY AMM edge cases
+    // ══════════════════════════════════════════════
+
+    #[test]
+    fn test_xy_arb_zero_reserves() {
+        assert_eq!(simulate_xy_arb(0, 1_000, 1_000, 2_000, 30, 30, 100), 0);
+        assert_eq!(simulate_xy_arb(1_000, 0, 1_000, 2_000, 30, 30, 100), 0);
+        assert_eq!(simulate_xy_arb(1_000, 2_000, 0, 2_000, 30, 30, 100), 0);
+        assert_eq!(simulate_xy_arb(1_000, 2_000, 1_000, 0, 30, 30, 100), 0);
+    }
+
+    #[test]
+    fn test_xy_arb_zero_input() {
+        assert_eq!(simulate_xy_arb(1_000, 2_000, 1_000, 3_000, 30, 30, 0), 0);
+    }
+
+    #[test]
+    fn test_xy_arb_100_pct_fee() {
+        // 10000 bps = 100% fee → after_fee = 0
+        assert_eq!(
+            simulate_xy_arb(1_000_000, 2_000_000, 1_000_000, 3_000_000, 10_000, 0, 100_000),
+            0
+        );
+    }
+
+    #[test]
+    fn test_xy_arb_reversed_price_no_profit() {
+        // Pool 1 has HIGHER price, Pool 2 LOWER → loss
+        let profit = simulate_xy_arb(
+            10_000_000, 30_000_000,  // price = 3.0
+            10_000_000, 20_000_000,  // price = 2.0
+            30, 30,
+            100_000,
+        );
+        assert_eq!(profit, 0, "Reversed arb direction should not profit");
+    }
+
+    #[test]
+    fn test_xy_arb_profit_scales_with_spread() {
+        let profit_small = simulate_xy_arb(
+            10_000_000, 20_000_000, 10_000_000, 22_000_000, 30, 30, 100_000,
+        );
+        let profit_large = simulate_xy_arb(
+            10_000_000, 20_000_000, 10_000_000, 30_000_000, 30, 30, 100_000,
+        );
+        assert!(profit_large > profit_small, "Wider spread = more profit");
+    }
+
+    // ══════════════════════════════════════════════
+    //  CLMM simulator tests
+    // ══════════════════════════════════════════════
+
+    #[test]
+    fn test_clmm_arb_zero_liquidity() {
+        assert_eq!(simulate_clmm_arb(1 << 64, 0, 1 << 64, 1_000_000, 30, 30, 1_000), 0);
+        assert_eq!(simulate_clmm_arb(1 << 64, 1_000_000, 1 << 64, 0, 30, 30, 1_000), 0);
+    }
+
+    #[test]
+    fn test_clmm_arb_zero_sqrt_price() {
+        assert_eq!(simulate_clmm_arb(0, 1_000_000, 1 << 64, 1_000_000, 30, 30, 1_000), 0);
+        assert_eq!(simulate_clmm_arb(1 << 64, 1_000_000, 0, 1_000_000, 30, 30, 1_000), 0);
+    }
+
+    #[test]
+    fn test_clmm_arb_zero_input() {
+        assert_eq!(
+            simulate_clmm_arb(1 << 64, 1_000_000_000, 1 << 64, 1_000_000_000, 30, 30, 0),
+            0
+        );
+    }
+
+    #[test]
+    fn test_clmm_arb_same_price_no_profit() {
+        let profit = simulate_clmm_arb(
+            1u128 << 64, 100_000_000_000u128,
+            1u128 << 64, 100_000_000_000u128,
+            30, 30, 1_000_000,
+        );
+        assert_eq!(profit, 0, "Same prices with fees should not profit");
+    }
+
+    #[test]
+    fn test_clmm_arb_profitable_with_price_divergence() {
+        let sqrt_price_low = (1u128 << 64) * 95 / 100;
+        let sqrt_price_high = (1u128 << 64) * 105 / 100;
+        let liquidity = 1_000_000_000_000u128;
+
+        let profit = simulate_clmm_arb(
+            sqrt_price_low, liquidity, sqrt_price_high, liquidity, 30, 30, 1_000_000,
+        );
+        assert!(profit > 0, "10% price divergence should profit, got {profit}");
+    }
+
+    #[test]
+    fn test_clmm_arb_exhausts_liquidity() {
+        let profit = simulate_clmm_arb(
+            1u128 << 64, 1_000u128, // tiny liquidity
+            (1u128 << 64) * 2, 1_000u128,
+            0, 0,
+            1_000_000_000, // huge input against tiny pool
+        );
+        assert_eq!(profit, 0, "Should return 0 when exhausting liquidity");
+    }
+
+    #[test]
+    fn test_clmm_arb_100_pct_fee() {
+        assert_eq!(
+            simulate_clmm_arb(1 << 64, 1_000_000_000, 1 << 64, 1_000_000_000, 10_000, 10_000, 1_000),
+            0
+        );
+    }
+
+    // ══════════════════════════════════════════════
+    //  max_trade_amount tests
+    // ══════════════════════════════════════════════
+
+    fn make_pool_for_max(dex: Dex, ra: Option<u64>, rb: Option<u64>, liq: Option<u128>) -> PoolState {
+        PoolState {
+            object_id: "0x1".into(), dex,
+            coin_type_a: "A".into(), coin_type_b: "B".into(),
+            sqrt_price: Some(1 << 64), tick_index: Some(0),
+            liquidity: liq, fee_rate_bps: Some(30),
+            reserve_a: ra, reserve_b: rb,
+            best_bid: None, best_ask: None, last_updated_ms: 0,
+        }
+    }
+
+    #[test]
+    fn test_max_trade_amm_with_reserves() {
+        let pool = make_pool_for_max(Dex::Aftermath, Some(30_000_000_000), Some(60_000_000_000), None);
+        assert_eq!(max_trade_amount(&pool), 10_000_000_000); // min(30B,60B)/3
+    }
+
+    #[test]
+    fn test_max_trade_amm_no_reserves() {
+        let pool = make_pool_for_max(Dex::FlowxAmm, None, None, None);
+        assert_eq!(max_trade_amount(&pool), 10_000_000_000); // fallback
+    }
+
+    #[test]
+    fn test_max_trade_clmm_with_liquidity() {
+        // liquidity = 100 * (1 << 32) → liquidity >> 32 = 100
+        let pool = make_pool_for_max(Dex::Cetus, None, None, Some(429_496_729_600));
+        assert_eq!(max_trade_amount(&pool), 1_000); // 100 clamped to min 1000
+    }
+
+    #[test]
+    fn test_max_trade_deepbook() {
+        let pool = make_pool_for_max(Dex::DeepBook, Some(90_000_000_000), None, None);
+        assert_eq!(max_trade_amount(&pool), 30_000_000_000); // 90B/3
+    }
+
+    #[test]
+    fn test_max_trade_clamped_to_100_sui() {
+        let pool = make_pool_for_max(Dex::Aftermath, Some(1_000_000_000_000), Some(1_000_000_000_000), None);
+        assert_eq!(max_trade_amount(&pool), MAX_TRADE_MIST);
+    }
+
+    #[test]
+    fn test_max_trade_clamped_to_min() {
+        let pool = make_pool_for_max(Dex::DeepBook, Some(100), None, None); // 100/3=33
+        assert_eq!(max_trade_amount(&pool), 1_000); // min clamp
+    }
+
+    // ══════════════════════════════════════════════
+    //  build_local_simulator tests
+    // ══════════════════════════════════════════════
+
+    fn clmm_pool(dex: Dex, sp: u128, liq: u128) -> PoolState {
+        PoolState {
+            object_id: "0xclmm".into(), dex,
+            coin_type_a: "SUI".into(), coin_type_b: "USDC".into(),
+            sqrt_price: Some(sp), tick_index: Some(0), liquidity: Some(liq),
+            fee_rate_bps: Some(30),
+            reserve_a: None, reserve_b: None,
+            best_bid: None, best_ask: None, last_updated_ms: 0,
+        }
+    }
+
+    fn amm_pool(dex: Dex, ra: u64, rb: u64) -> PoolState {
+        PoolState {
+            object_id: "0xamm".into(), dex,
+            coin_type_a: "SUI".into(), coin_type_b: "USDC".into(),
+            sqrt_price: None, tick_index: None, liquidity: None,
+            fee_rate_bps: Some(30),
+            reserve_a: Some(ra), reserve_b: Some(rb),
+            best_bid: None, best_ask: None, last_updated_ms: 0,
+        }
+    }
+
+    #[test]
+    fn test_build_simulator_both_amm() {
+        let p1 = amm_pool(Dex::Aftermath, 10_000_000, 20_000_000);
+        let p2 = amm_pool(Dex::FlowxAmm, 10_000_000, 25_000_000);
+        let (sim, hi) = build_local_simulator(&p1, &p2);
+        assert!(hi > 0);
+        let profit = sim(100_000);
+        assert!(profit > 0, "AMM→AMM arb should profit with price gap, got {profit}");
+    }
+
+    #[test]
+    fn test_build_simulator_both_clmm() {
+        let sp_low = (1u128 << 64) * 95 / 100;
+        let sp_high = (1u128 << 64) * 105 / 100;
+        let liq = 1_000_000_000_000u128;
+        let p1 = clmm_pool(Dex::Cetus, sp_low, liq);
+        let p2 = clmm_pool(Dex::Turbos, sp_high, liq);
+        let (sim, hi) = build_local_simulator(&p1, &p2);
+        assert!(hi > 0);
+        let profit = sim(1_000_000);
+        assert!(profit > 0, "CLMM→CLMM should profit with 10% divergence, got {profit}");
+    }
+
+    #[test]
+    fn test_build_simulator_mixed_clmm_amm() {
+        let flash = clmm_pool(Dex::Cetus, 1u128 << 64, 1_000_000_000_000u128);
+        let sell = amm_pool(Dex::Aftermath, 10_000_000, 25_000_000);
+        let (sim, hi) = build_local_simulator(&flash, &sell);
+        assert!(hi > 0);
+        let _profit = sim(100_000); // should not panic
+    }
+
+    #[test]
+    fn test_build_simulator_hi_bound_uses_min() {
+        let small = amm_pool(Dex::Aftermath, 3_000, 6_000); // max=1000 (min clamp)
+        let big = amm_pool(Dex::FlowxAmm, 300_000_000_000, 600_000_000_000);
+        let (_, hi) = build_local_simulator(&small, &big);
+        assert_eq!(hi, 1_000, "Should use minimum of two pool limits");
+    }
+
+    // ══════════════════════════════════════════════
+    //  Ternary search advanced
+    // ══════════════════════════════════════════════
+
+    #[test]
+    fn test_ternary_search_flat_function() {
+        let (_, profit) = ternary_search(0, 1_000, 1, |_| 42);
+        assert_eq!(profit, 42);
+    }
+
+    #[test]
+    fn test_ternary_search_peak_at_start() {
+        let (optimal, _) = ternary_search(0, 100, 1, |x| 100u64.saturating_sub(x));
+        assert!(optimal <= 5, "Peak at start, got {optimal}");
+    }
+
+    #[test]
+    fn test_ternary_search_peak_at_end() {
+        let (optimal, _) = ternary_search(0, 100, 1, |x| x);
+        assert!(optimal >= 95, "Peak at end, got {optimal}");
+    }
+
+    #[test]
+    fn test_ternary_search_with_real_amm() {
+        let simulate = |amount: u64| {
+            simulate_xy_arb(10_000_000, 20_000_000, 10_000_000, 25_000_000, 30, 30, amount)
+        };
+        let (optimal, max_profit) = ternary_search(1_000, 5_000_000, 10_000, simulate);
+        assert!(max_profit > 0, "Should find profitable point");
+        assert!(optimal > 1_000 && optimal < 5_000_000);
+
+        // Verify it's near the peak
+        let p_low = simulate(optimal.saturating_sub(100_000));
+        let p_high = simulate(optimal + 100_000);
+        assert!(max_profit >= p_low && max_profit >= p_high);
+    }
 }

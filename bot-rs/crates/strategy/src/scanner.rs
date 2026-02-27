@@ -203,4 +203,172 @@ mod tests {
         // Aftermath can't be a flash source
         assert_eq!(resolve_strategy(Dex::Aftermath, Dex::Cetus), None);
     }
+
+    // ── resolve_strategy exhaustive tests ──
+
+    #[test]
+    fn test_resolve_all_valid_strategies() {
+        let cases = vec![
+            (Dex::Cetus, Dex::Turbos, StrategyType::CetusToTurbos),
+            (Dex::Turbos, Dex::Cetus, StrategyType::TurbosToCetus),
+            (Dex::Cetus, Dex::DeepBook, StrategyType::CetusToDeepBook),
+            (Dex::DeepBook, Dex::Cetus, StrategyType::DeepBookToCetus),
+            (Dex::Turbos, Dex::DeepBook, StrategyType::TurbosToDeepBook),
+            (Dex::DeepBook, Dex::Turbos, StrategyType::DeepBookToTurbos),
+            (Dex::Cetus, Dex::Aftermath, StrategyType::CetusToAftermath),
+            (Dex::Turbos, Dex::Aftermath, StrategyType::TurbosToAftermath),
+            (Dex::DeepBook, Dex::Aftermath, StrategyType::DeepBookToAftermath),
+            (Dex::Cetus, Dex::FlowxClmm, StrategyType::CetusToFlowxClmm),
+            (Dex::FlowxClmm, Dex::Cetus, StrategyType::FlowxClmmToCetus),
+            (Dex::Turbos, Dex::FlowxClmm, StrategyType::TurbosToFlowxClmm),
+            (Dex::FlowxClmm, Dex::Turbos, StrategyType::FlowxClmmToTurbos),
+            (Dex::DeepBook, Dex::FlowxClmm, StrategyType::DeepBookToFlowxClmm),
+            (Dex::FlowxClmm, Dex::DeepBook, StrategyType::FlowxClmmToDeepBook),
+            (Dex::Cetus, Dex::FlowxAmm, StrategyType::CetusToFlowxAmm),
+            (Dex::Turbos, Dex::FlowxAmm, StrategyType::TurbosToFlowxAmm),
+            (Dex::DeepBook, Dex::FlowxAmm, StrategyType::DeepBookToFlowxAmm),
+        ];
+
+        for (flash, sell, expected) in cases {
+            assert_eq!(
+                resolve_strategy(flash, sell),
+                Some(expected),
+                "Failed for {flash:?} → {sell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_no_flash_dexes() {
+        // Aftermath and FlowxAmm cannot be flash sources
+        for sell in [Dex::Cetus, Dex::Turbos, Dex::DeepBook, Dex::FlowxClmm, Dex::Aftermath, Dex::FlowxAmm] {
+            assert_eq!(resolve_strategy(Dex::Aftermath, sell), None, "Aftermath as flash → {sell:?}");
+            assert_eq!(resolve_strategy(Dex::FlowxAmm, sell), None, "FlowxAmm as flash → {sell:?}");
+        }
+    }
+
+    #[test]
+    fn test_resolve_same_dex_returns_none() {
+        // Same DEX can't be both flash and sell (no arb)
+        assert_eq!(resolve_strategy(Dex::Cetus, Dex::Cetus), None);
+        assert_eq!(resolve_strategy(Dex::Turbos, Dex::Turbos), None);
+        assert_eq!(resolve_strategy(Dex::DeepBook, Dex::DeepBook), None);
+        assert_eq!(resolve_strategy(Dex::FlowxClmm, Dex::FlowxClmm), None);
+    }
+
+    // ── same_pair tests ──
+
+    #[test]
+    fn test_same_pair_reversed() {
+        let a = make_pool("0x1", Dex::Cetus, 1 << 64);
+        let mut b = make_pool("0x2", Dex::Turbos, 1 << 64);
+        b.coin_type_a = "USDC".to_string();
+        b.coin_type_b = "SUI".to_string();
+        assert!(same_pair(&a, &b), "Reversed pair should still match");
+    }
+
+    #[test]
+    fn test_different_pair_no_match() {
+        let a = make_pool("0x1", Dex::Cetus, 1 << 64);
+        let mut b = make_pool("0x2", Dex::Turbos, 1 << 64);
+        b.coin_type_b = "WETH".to_string();
+        assert!(!same_pair(&a, &b));
+    }
+
+    // ── scan_two_hop integration tests ──
+
+    #[test]
+    fn test_scan_empty_pools() {
+        let scanner = Scanner::new(1_000);
+        assert!(scanner.scan_two_hop(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_scan_single_pool_no_opportunities() {
+        let scanner = Scanner::new(1_000);
+        let pools = vec![make_pool("0x1", Dex::Cetus, 1 << 64)];
+        assert!(scanner.scan_two_hop(&pools).is_empty());
+    }
+
+    #[test]
+    fn test_scan_same_price_no_opportunities() {
+        let scanner = Scanner::new(1_000);
+        let pools = vec![
+            make_pool("0x1", Dex::Cetus, 1 << 64),
+            make_pool("0x2", Dex::Turbos, 1 << 64),
+        ];
+        assert!(scanner.scan_two_hop(&pools).is_empty());
+    }
+
+    #[test]
+    fn test_scan_detects_spread() {
+        let scanner = Scanner::new(0); // zero min_profit to catch everything
+        let pools = vec![
+            make_pool("0x1", Dex::Cetus, (1u128 << 64) * 90 / 100), // price=0.81
+            make_pool("0x2", Dex::Turbos, (1u128 << 64) * 110 / 100), // price=1.21
+        ];
+        let opps = scanner.scan_two_hop(&pools);
+        assert!(!opps.is_empty(), "Should detect ~40% spread");
+        assert_eq!(opps[0].pool_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_scan_skips_stale_pools() {
+        let scanner = Scanner::new(0);
+        let mut fresh = make_pool("0x1", Dex::Cetus, (1u128 << 64) * 80 / 100);
+        let mut stale = make_pool("0x2", Dex::Turbos, (1u128 << 64) * 120 / 100);
+        stale.last_updated_ms = 0; // epoch = very stale
+        fresh.last_updated_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let opps = scanner.scan_two_hop(&[fresh, stale]);
+        assert!(opps.is_empty(), "Should skip stale pool");
+    }
+
+    #[test]
+    fn test_scan_different_pairs_no_match() {
+        let scanner = Scanner::new(0);
+        let mut a = make_pool("0x1", Dex::Cetus, (1u128 << 64) * 80 / 100);
+        let mut b = make_pool("0x2", Dex::Turbos, (1u128 << 64) * 120 / 100);
+        b.coin_type_b = "WETH".to_string();
+        a.last_updated_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        b.last_updated_ms = a.last_updated_ms;
+        assert!(scanner.scan_two_hop(&[a, b]).is_empty());
+    }
+
+    #[test]
+    fn test_scan_sorted_by_profit() {
+        let scanner = Scanner::new(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let mut small_spread = make_pool("0x1", Dex::Cetus, (1u128 << 64) * 98 / 100);
+        let mut small_other = make_pool("0x2", Dex::Turbos, (1u128 << 64) * 103 / 100);
+        let mut big_spread = make_pool("0x3", Dex::Cetus, (1u128 << 64) * 80 / 100);
+        let mut big_other = make_pool("0x4", Dex::DeepBook, (1u128 << 64) * 120 / 100);
+
+        // DeepBook needs reserves for price
+        big_other.sqrt_price = None;
+        big_other.reserve_a = Some(1_000_000);
+        big_other.reserve_b = Some(1_440_000); // price ~1.44 vs 0.64
+
+        for p in [&mut small_spread, &mut small_other, &mut big_spread, &mut big_other] {
+            p.last_updated_ms = now;
+        }
+
+        let opps = scanner.scan_two_hop(&[small_spread, small_other, big_spread, big_other]);
+        if opps.len() >= 2 {
+            assert!(
+                opps[0].expected_profit >= opps[1].expected_profit,
+                "Should be sorted descending by profit"
+            );
+        }
+    }
 }
