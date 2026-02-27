@@ -98,12 +98,14 @@ echo ""
 echo "✅ Published successfully!"
 echo "   Package ID: $PACKAGE_ID"
 
-# Extract AdminCap and PauseFlag object IDs
+# Extract AdminCap, PauseFlag, and UpgradeCap object IDs
 ADMIN_CAP=$(echo "$RESULT" | jq -r '.objectChanges[] | select(.objectType | contains("AdminCap")) | .objectId' 2>/dev/null)
 PAUSE_FLAG=$(echo "$RESULT" | jq -r '.objectChanges[] | select(.objectType | contains("PauseFlag")) | .objectId' 2>/dev/null)
+UPGRADE_CAP=$(echo "$RESULT" | jq -r '.objectChanges[] | select(.objectType | contains("UpgradeCap")) | .objectId' 2>/dev/null)
 
 echo "   AdminCap:   $ADMIN_CAP"
 echo "   PauseFlag:  $PAUSE_FLAG"
+echo "   UpgradeCap: $UPGRADE_CAP"
 
 # Extract transaction digest
 TX_DIGEST=$(echo "$RESULT" | jq -r '.digest' 2>/dev/null)
@@ -126,6 +128,7 @@ cat > "$DEPLOY_FILE" <<DEPLOY
   "packageId": "$PACKAGE_ID",
   "adminCap": "$ADMIN_CAP",
   "pauseFlag": "$PAUSE_FLAG",
+  "upgradeCap": "$UPGRADE_CAP",
   "deployer": "$ADDR",
   "txDigest": "$TX_DIGEST",
   "gasCost": "$GAS_COST",
@@ -147,12 +150,32 @@ echo "ADMIN_CAP_ID=$ADMIN_CAP"
 echo "PAUSE_FLAG_ID=$PAUSE_FLAG"
 echo ""
 echo "══════════════════════════════════════════════════"
+echo "  ⚠️  UpgradeCap Decision (IMPORTANT):"
+echo "══════════════════════════════════════════════════"
+echo ""
+echo "  UpgradeCap ID: $UPGRADE_CAP"
+echo ""
+echo "  The UpgradeCap controls package upgrades. Choose ONE:"
+echo ""
+echo "  Option A — Make IMMUTABLE (recommended for trust):"
+echo "    sui client call --package 0x2 --module package \\"
+echo "      --function make_immutable \\"
+echo "      --args $UPGRADE_CAP \\"
+echo "      --gas-budget 10000000"
+echo ""
+echo "  Option B — Keep for future upgrades:"
+echo "    Store in a multisig wallet (e.g., MSafe) or"
+echo "    transfer to cold storage. If your hot wallet is"
+echo "    compromised, an attacker could upgrade the package."
+echo ""
+echo "══════════════════════════════════════════════════"
 echo "  Next steps:"
-echo "  1. Copy the values above into bot-rs/.env"
-echo "  2. Set MONITORED_POOLS with pool IDs"
-echo "  3. Set DEEP_FEE_COIN_ID if using DeepBook"
-echo "  4. Run dry-run test: ./scripts/dry-run-mainnet.sh"
-echo "  5. Start the bot: cd bot-rs && cargo run --release"
-echo "  6. Verify on explorer:"
+echo "  1. Handle UpgradeCap (Option A or B above)"
+echo "  2. Copy the .env values above into bot-rs/.env"
+echo "  3. Set MONITORED_POOLS with pool IDs"
+echo "  4. Set DEEP_FEE_COIN_ID if using DeepBook"
+echo "  5. Run dry-run test: ./scripts/dry-run-mainnet.sh"
+echo "  6. Start the bot: cd bot-rs && cargo run --release"
+echo "  7. Verify on explorer:"
 echo "     https://suiscan.xyz/mainnet/object/$PACKAGE_ID"
 echo "══════════════════════════════════════════════════"
