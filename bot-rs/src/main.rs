@@ -1,11 +1,11 @@
 use anyhow::Result;
 use arb_collector::{rpc_poller, DexPackage, PoolCache, RpcPoller, TxEffectStream, WsStream};
 use arb_executor::{Signer, Submitter};
-use arb_strategy::{DryRunner, Scanner};
+use arb_strategy::{DryRunner, Scanner, build_local_simulator, ternary_search};
 use arb_types::Config;
 use std::time::Duration;
 use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -162,10 +162,30 @@ async fn main() -> Result<()> {
                 None => continue,
             };
 
-            // 4. Optimize amount via ternary search (if profitable enough to justify)
+            // 4. Optimize amount via ternary search (local simulation)
             if best.expected_profit > scanner.min_profit_mist * 2 {
-                // TODO: Run ternary search with local simulation
-                // For now, use the scanner's estimate
+                // Look up the two pools involved
+                let flash_pool = pools.iter().find(|p| p.object_id == best.pool_ids[0]);
+                let sell_pool = pools.iter().find(|p| p.object_id == best.pool_ids[1]);
+
+                if let (Some(fp), Some(sp)) = (flash_pool, sell_pool) {
+                    let (simulate, hi) = build_local_simulator(fp, sp);
+                    let (optimal_amount, max_profit) =
+                        ternary_search(1_000, hi, 100_000, &*simulate);
+
+                    if max_profit > 0 {
+                        debug!(
+                            prev_amount = %best.amount_in,
+                            new_amount = %optimal_amount,
+                            prev_profit = %best.expected_profit,
+                            new_profit = %max_profit,
+                            "Ternary search optimized"
+                        );
+                        best.amount_in = optimal_amount;
+                        best.expected_profit = max_profit;
+                        best.net_profit = max_profit as i64 - best.estimated_gas as i64;
+                    }
+                }
             }
 
             info!(

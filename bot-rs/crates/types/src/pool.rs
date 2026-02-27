@@ -87,7 +87,13 @@ impl PoolState {
                     (Some(bid), Some(ask)) => Some((bid + ask) / 2.0),
                     (Some(bid), None) => Some(bid),
                     (None, Some(ask)) => Some(ask),
-                    _ => None,
+                    _ => {
+                        // Fallback: use vault reserves as rough price proxy
+                        match (self.reserve_a, self.reserve_b) {
+                            (Some(a), Some(b)) if a > 0 => Some(b as f64 / a as f64),
+                            _ => None,
+                        }
+                    }
                 }
             }
         }

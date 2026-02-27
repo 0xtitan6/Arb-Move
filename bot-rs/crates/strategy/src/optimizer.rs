@@ -1,3 +1,5 @@
+use arb_types::pool::{Dex, PoolState};
+
 /// Optimal trade sizing via ternary search.
 ///
 /// The profit function f(amount_in) for AMM/CLMM arbitrage is **concave**:
@@ -5,7 +7,7 @@
 /// Ternary search finds the maximum of a concave function in O(log n) iterations.
 ///
 /// For u64 precision (0..u64::MAX), ~64 iterations suffice.
-
+///
 /// Find the input amount that maximizes profit using ternary search.
 ///
 /// # Arguments
@@ -129,28 +131,32 @@ pub fn simulate_xy_arb(
 /// Simulate profit for a CLMM arbitrage using sqrt_price approximation.
 ///
 /// For concentrated liquidity pools, the price impact depends on:
-/// - Current sqrt_price
+/// - Current sqrt_price (Q64.64 fixed-point)
 /// - Active liquidity at current tick
 /// - Swap direction
 ///
-/// This is a simplified model — the real simulation would traverse ticks.
+/// This is a simplified single-tick model. For a2b swaps:
+///   amount_in  (token A) moves sqrt_price DOWN  → delta_sqrt = amount_in / L
+///   amount_out (token B) = L * delta_sqrt_price
+/// For b2a swaps: sqrt_price moves UP, reversed dimensions.
+///
+/// Pool 1 = flash/buy leg (a2b: we send A, receive B)
+/// Pool 2 = sell leg (b2a: we send B back, receive A)
 pub fn simulate_clmm_arb(
     sqrt_price_1: u128,
     liquidity_1: u128,
-    _sqrt_price_2: u128,
+    sqrt_price_2: u128,
     liquidity_2: u128,
     fee_bps_1: u64,
     fee_bps_2: u64,
     amount_in: u64,
 ) -> u64 {
-    if liquidity_1 == 0 || liquidity_2 == 0 {
+    if liquidity_1 == 0 || liquidity_2 == 0 || sqrt_price_1 == 0 || sqrt_price_2 == 0 {
         return 0;
     }
 
-    // Simplified: assume swap stays within single tick range
-    // For a2b swap: delta_sqrt_price = amount_in / liquidity
-    // amount_out = liquidity * delta_sqrt_price (in the other dimension)
-
+    // === Pool 1: a2b swap (send token A, receive token B) ===
+    // Fee on input
     let fee_1 = amount_in as u128 * fee_bps_1 as u128 / 10_000;
     let after_fee_1 = (amount_in as u128).saturating_sub(fee_1);
 
@@ -158,40 +164,158 @@ pub fn simulate_clmm_arb(
         return 0;
     }
 
-    // Pool 1: buy (swap in one direction)
-    // Simplified constant-liquidity model
+    // a2b: token A goes in, sqrt_price decreases
+    // delta_sqrt = amount_a_in / L  (in Q64.64 space)
     let delta_sqrt_1 = (after_fee_1 << 64) / liquidity_1;
     let new_sqrt_1 = sqrt_price_1.saturating_sub(delta_sqrt_1);
 
     if new_sqrt_1 == 0 {
-        return 0;
+        return 0; // exhausted all liquidity at this tick
     }
 
-    // Amount out from pool 1 (other dimension)
-    let amount_mid = liquidity_1
-        .checked_mul(sqrt_price_1.saturating_sub(new_sqrt_1))
+    // amount_b_out = L * (sqrt_price_old - sqrt_price_new)  (shift back from Q64.64)
+    let amount_b_mid = liquidity_1
+        .checked_mul(sqrt_price_1 - new_sqrt_1)
         .map(|v| v >> 64)
         .unwrap_or(0);
 
-    if amount_mid == 0 {
+    if amount_b_mid == 0 {
         return 0;
     }
 
-    // Pool 2: sell (swap in reverse direction)
-    let fee_2 = amount_mid * fee_bps_2 as u128 / 10_000;
-    let after_fee_2 = amount_mid.saturating_sub(fee_2);
+    // === Pool 2: b2a swap (send token B, receive token A) ===
+    // Fee on input
+    let fee_2 = amount_b_mid * fee_bps_2 as u128 / 10_000;
+    let after_fee_2 = amount_b_mid.saturating_sub(fee_2);
 
-    let delta_sqrt_2 = (after_fee_2 << 64) / liquidity_2;
-    let amount_out = liquidity_2
-        .checked_mul(delta_sqrt_2)
-        .map(|v| v >> 64)
-        .unwrap_or(0);
-
-    if amount_out <= amount_in as u128 {
+    if after_fee_2 == 0 {
         return 0;
     }
 
-    (amount_out - amount_in as u128) as u64
+    // b2a: token B goes in, sqrt_price increases
+    // delta_sqrt = amount_b_in * sqrt_price^2 / L  (approximate: delta_sqrt ≈ after_fee_2 * sqrt_price_2 / L >> 64)
+    // More precisely: new_sqrt = L * old_sqrt / (L - amount_b * old_sqrt >> 64)
+    // Simplified single-tick: delta_sqrt_2 = after_fee_2 << 64 / (L * sqrt_price_2 >> 64)
+    // Then amount_a_out = L * delta_sqrt_2 >> 64
+
+    // Use the reciprocal relationship: for b2a, amount_a_out = L * delta_sqrt / sqrt_price_new
+    let denom = liquidity_2
+        .checked_mul(sqrt_price_2 >> 32)
+        .map(|v| v >> 32)
+        .unwrap_or(u128::MAX);
+
+    if denom == 0 || denom == u128::MAX {
+        return 0;
+    }
+
+    // amount_a_out ≈ after_fee_2 * liquidity_2 / (liquidity_2 + after_fee_2 * sqrt_price_2 >> 64)
+    // Simplified constant-liquidity: amount_a_out = after_fee_2 / price_2
+    // where price_2 = (sqrt_price_2 / 2^64)^2
+    let price_2_q128 = (sqrt_price_2 >> 32) * (sqrt_price_2 >> 32); // approximate price in Q64
+    if price_2_q128 == 0 {
+        return 0;
+    }
+
+    let amount_a_out = (after_fee_2 << 64) / price_2_q128;
+
+    if amount_a_out <= amount_in as u128 {
+        return 0;
+    }
+
+    (amount_a_out - amount_in as u128) as u64
+}
+
+/// Hard cap on trade size (100 SUI).
+const MAX_TRADE_MIST: u64 = 100_000_000_000;
+
+/// Compute the upper bound for ternary search based on pool type.
+fn max_trade_amount(pool: &PoolState) -> u64 {
+    let raw = match pool.dex {
+        // AMM: don't consume more than 30% of the smaller reserve
+        Dex::Aftermath | Dex::FlowxAmm => {
+            match (pool.reserve_a, pool.reserve_b) {
+                (Some(a), Some(b)) => a.min(b) / 3,
+                (Some(a), None) => a / 3,
+                (None, Some(b)) => b / 3,
+                _ => 10_000_000_000, // 10 SUI fallback
+            }
+        }
+        // CLMM: conservative cap from liquidity at current tick
+        Dex::Cetus | Dex::Turbos | Dex::FlowxClmm => {
+            pool.liquidity
+                .map(|l| (l >> 32) as u64) // conservative: L / 2^32
+                .unwrap_or(10_000_000_000)
+        }
+        // DeepBook CLOB: use vault reserves or fallback
+        Dex::DeepBook => {
+            pool.reserve_a.unwrap_or(10_000_000_000) / 3
+        }
+    };
+    raw.clamp(1_000, MAX_TRADE_MIST) // [1000 MIST, 100 SUI]
+}
+
+/// Build a local simulation closure for ternary search optimization.
+///
+/// Returns `(simulate_fn, hi_bound)` where:
+/// - `simulate_fn` takes `amount_in: u64` and returns `profit: u64`
+/// - `hi_bound` is the maximum amount to search
+///
+/// The closure captures pool state and uses the appropriate model
+/// (constant-product for AMMs, sqrt_price for CLMMs).
+pub fn build_local_simulator(
+    flash_pool: &PoolState,
+    sell_pool: &PoolState,
+) -> (Box<dyn Fn(u64) -> u64>, u64) {
+    let hi = max_trade_amount(flash_pool).min(max_trade_amount(sell_pool));
+    let fee1 = flash_pool.fee_rate_bps.unwrap_or(30);
+    let fee2 = sell_pool.fee_rate_bps.unwrap_or(30);
+
+    let is_amm = |dex: Dex| matches!(dex, Dex::Aftermath | Dex::FlowxAmm);
+    let is_clmm = |dex: Dex| matches!(dex, Dex::Cetus | Dex::Turbos | Dex::FlowxClmm);
+
+    // Both AMM pools — use constant-product model
+    if is_amm(flash_pool.dex) && is_amm(sell_pool.dex) {
+        let ra1 = flash_pool.reserve_a.unwrap_or(0);
+        let rb1 = flash_pool.reserve_b.unwrap_or(0);
+        let ra2 = sell_pool.reserve_a.unwrap_or(0);
+        let rb2 = sell_pool.reserve_b.unwrap_or(0);
+        return (
+            Box::new(move |amount| simulate_xy_arb(ra1, rb1, ra2, rb2, fee1, fee2, amount)),
+            hi,
+        );
+    }
+
+    // Both CLMM pools — use sqrt_price model
+    if is_clmm(flash_pool.dex) && is_clmm(sell_pool.dex) {
+        let sp1 = flash_pool.sqrt_price.unwrap_or(0);
+        let l1 = flash_pool.liquidity.unwrap_or(0);
+        let sp2 = sell_pool.sqrt_price.unwrap_or(0);
+        let l2 = sell_pool.liquidity.unwrap_or(0);
+        return (
+            Box::new(move |amount| simulate_clmm_arb(sp1, l1, sp2, l2, fee1, fee2, amount)),
+            hi,
+        );
+    }
+
+    // Mixed: CLMM flash → AMM sell (or DeepBook)
+    // Use the AMM constant-product model for AMM legs and CLMM model for CLMM legs.
+    // For DeepBook without order book data, fall back to reserve-based AMM model.
+    // Simplification: treat the whole thing as xy=k using effective reserves derived from price.
+    let price1 = flash_pool.price_a_in_b().unwrap_or(1.0);
+    let price2 = sell_pool.price_a_in_b().unwrap_or(1.0);
+
+    // Synthesize virtual reserves from prices: reserve_b / reserve_a = price
+    // Use 1B as virtual pool depth (cancels out in ratio — only relative matters)
+    let virtual_depth: u64 = 1_000_000_000;
+    let ra1 = virtual_depth;
+    let rb1 = (virtual_depth as f64 * price1) as u64;
+    let ra2 = virtual_depth;
+    let rb2 = (virtual_depth as f64 * price2) as u64;
+
+    (
+        Box::new(move |amount| simulate_xy_arb(ra1, rb1, ra2, rb2, fee1, fee2, amount)),
+        hi,
+    )
 }
 
 #[cfg(test)]
