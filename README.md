@@ -125,6 +125,7 @@ bot-rs/
     executor/
       ptb_builder.rs            Programmable Transaction Block construction (min_profit floor)
       gas_monitor.rs            RPC-based wallet balance check with caching
+      coin_merger.rs            Periodic Coin<SUI> dust consolidation via unsafe_payAllSui
       signer.rs                 Ed25519 transaction signing
       submitter.rs              Transaction submission with retry + duplicate detection
 ```
@@ -164,10 +165,11 @@ Each cycle (default 500ms):
 - **Gas balance monitor** -- checks wallet SUI balance via RPC (cached, 10s refresh). Blocks trading below configurable minimum (default 0.1 SUI).
 - **Net-profit gate** -- skips trades where `expected_profit - estimated_gas <= 0` after optimization.
 - **Startup validation** -- checks all critical config (package ID, admin cap, pools, DEX objects) at boot and logs warnings/errors.
+- **Coin dust merger** -- periodically consolidates fragmented `Coin<SUI>` objects via `unsafe_payAllSui` to prevent hitting Sui's per-transaction object limits.
 
 ### Test Coverage
 - **65 Move unit tests** -- profit math (22 tests), admin controls (7), pause mechanism, coin utilities, adapter edge cases.
-- **141 Rust unit tests** -- scanner two-hop + tri-hop detection (20), strategy resolution exhaustive (12), optimizer ternary search + AMM/CLMM simulation (20), circuit breaker trip/cooldown/reset (9), gas monitor (3), decimal normalization (11), pool price + staleness (16), parser robustness (5+), config validation, opportunity profitability.
+- **145 Rust unit tests** -- scanner two-hop + tri-hop detection (20), strategy resolution exhaustive (12), optimizer ternary search + AMM/CLMM simulation (20), circuit breaker trip/cooldown/reset (9), gas monitor (3), coin merger (4), decimal normalization (11), pool price + staleness (16), parser robustness (5+), config validation, opportunity profitability.
 
 ## Quick Start
 
