@@ -150,8 +150,17 @@ impl PtbBuilder {
         );
 
         let amount = opp.amount_in.to_string();
-        // Use 90% of expected_profit as min_profit guard (tight but allows for minor slippage)
-        let min_profit = (opp.expected_profit * 9 / 10).to_string();
+        // Use 90% of expected_profit as min_profit guard (tight but allows for minor slippage).
+        // Floor at 1 MIST so the on-chain assert_profit() check is never no-op.
+        let min_profit_raw = opp.expected_profit * 9 / 10;
+        let min_profit = min_profit_raw.max(1).to_string();
+
+        debug!(
+            amount = %amount,
+            min_profit = %min_profit,
+            expected_profit = %opp.expected_profit,
+            "PTB min_profit guard"
+        );
 
         let args = match opp.strategy {
             // ═══════════════════════════════════════

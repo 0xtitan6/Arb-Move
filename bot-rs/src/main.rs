@@ -286,11 +286,40 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // 4b. Post-optimization guards
+            // Guard: skip if optimizer couldn't find a profitable trade
+            if best.expected_profit == 0 {
+                debug!("Optimizer found no profitable amount — skipping");
+                continue;
+            }
+
+            // Guard: check opportunity staleness (prices may have moved)
+            let opp_age_ms = now_ms().saturating_sub(best.detected_at_ms);
+            if opp_age_ms > 3_000 {
+                debug!(
+                    age_ms = %opp_age_ms,
+                    "Opportunity too stale (>3s) — skipping"
+                );
+                continue;
+            }
+
+            // Guard: net profit must still be positive after gas
+            best.net_profit = best.expected_profit as i64 - best.estimated_gas as i64;
+            if best.net_profit <= 0 {
+                debug!(
+                    expected_profit = %best.expected_profit,
+                    estimated_gas = %best.estimated_gas,
+                    "Net profit non-positive after optimization — skipping"
+                );
+                continue;
+            }
+
             info!(
                 strategy = ?best.strategy,
                 amount = %best.amount_in,
                 expected_profit = %best.expected_profit,
                 net_profit = %best.net_profit,
+                min_profit_onchain = %(best.expected_profit * 9 / 10).max(1),
                 "Processing opportunity"
             );
 
