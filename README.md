@@ -106,17 +106,25 @@ sources/
 
 ```
 bot-rs/
-  src/main.rs                   Bot orchestrator + strategy loop
+  src/main.rs                   Bot orchestrator + strategy loop + startup validation
   crates/
-    types/                      Config, PoolState, ArbOpportunity, StrategyType
-    collector/                  Pool data collection (RPC polling + WebSocket streaming)
+    types/
+      config.rs                 Typed config from env vars (pools, DEX objects, circuit breaker)
+      pool.rs                   PoolState, Dex enum, price_a_in_b(), flash swap support
+      opportunity.rs            ArbOpportunity, StrategyType (27 variants), move_function_name()
+      decimals.rs               Token decimal normalization for cross-DEX price comparison
+    collector/
+      rpc_poller.rs             Polling-based pool state collector with cache seeding
+      ws_stream.rs              WebSocket event streaming (MoveEvent / TransactionEffects)
       parsers/                  DEX-specific JSON parsers (Cetus, Turbos, DeepBook, FlowX, Aftermath)
     strategy/
-      scanner.rs                O(n^2) pairwise spread detection across monitored pools
+      scanner.rs                O(n²) two-hop spread detection + O(n³) tri-hop triangular scanning
       optimizer.rs              Ternary search for optimal trade size + CLMM/AMM simulation
-      dry_runner.rs             RPC dry-run validation before submission
+      circuit_breaker.rs        Auto-halt on consecutive failures or cumulative loss threshold
+      simulator.rs              RPC dry-run validation before submission
     executor/
-      ptb_builder.rs            Programmable Transaction Block construction
+      ptb_builder.rs            Programmable Transaction Block construction (min_profit floor)
+      gas_monitor.rs            RPC-based wallet balance check with caching
       signer.rs                 Ed25519 transaction signing
       submitter.rs              Transaction submission with retry + duplicate detection
 ```
@@ -126,7 +134,7 @@ bot-rs/
 Each cycle (default 500ms):
 
 1. **Collect** -- Poll or stream pool state updates from all monitored DEXes
-2. **Scan** -- Pairwise comparison of pool prices; detect spreads > 0.1%
+2. **Scan** -- Two-hop pairwise + tri-hop triangular scanning; detect spreads > 0.1% / cross-rates > 1.003
 3. **Optimize** -- Ternary search finds optimal input amount (maximizes concave profit curve)
 4. **Simulate** -- Local CLMM/AMM math estimates profit with price impact
 5. **Build** -- Construct Programmable Transaction Block with min_profit guard
@@ -147,14 +155,19 @@ Each cycle (default 500ms):
 ### Off-Chain Safeguards
 - **Supervised collectors** -- all collector tasks auto-restart on failure with heartbeat tracking.
 - **Staleness guards** -- strategy loop skips cycles when pool data is >10s old or all collectors are dead.
-- **Dry-run validation** -- every trade is simulated via RPC before signing (configurable).
+- **Opportunity freshness** -- skips opportunities older than 3 seconds (prices move fast).
+- **Dry-run validation** -- every trade is simulated via RPC before signing (configurable). Gas and profit are updated from actual dry-run results.
 - **Duplicate tx detection** -- submitter catches "already executed" errors to avoid wasted retries.
-- **90% min_profit guard** -- PTB sets on-chain min_profit to 90% of expected, rejecting excessive slippage.
+- **min_profit guard** -- PTB sets on-chain min_profit to `max(1, 90% of expected)`, floored at 1 MIST so `assert_profit` is never a no-op.
 - **Max trade cap** -- optimizer caps any single trade at 100 SUI.
+- **Circuit breaker** -- auto-halts trading after N consecutive failures or cumulative loss exceeding threshold. Cooldown period before auto-reset.
+- **Gas balance monitor** -- checks wallet SUI balance via RPC (cached, 10s refresh). Blocks trading below configurable minimum (default 0.1 SUI).
+- **Net-profit gate** -- skips trades where `expected_profit - estimated_gas <= 0` after optimization.
+- **Startup validation** -- checks all critical config (package ID, admin cap, pools, DEX objects) at boot and logs warnings/errors.
 
 ### Test Coverage
-- **65 Move unit tests** -- profit math, admin controls, pause mechanism, coin utilities, adapter edge cases.
-- **10 Rust tests** -- scanner pairing, strategy resolution, optimizer simulation, parser robustness.
+- **65 Move unit tests** -- profit math (22 tests), admin controls (7), pause mechanism, coin utilities, adapter edge cases.
+- **141 Rust unit tests** -- scanner two-hop + tri-hop detection (20), strategy resolution exhaustive (12), optimizer ternary search + AMM/CLMM simulation (20), circuit breaker trip/cooldown/reset (9), gas monitor (3), decimal normalization (11), pool price + staleness (16), parser robustness (5+), config validation, opportunity profitability.
 
 ## Quick Start
 
@@ -243,6 +256,10 @@ sui client call \
 | `DRY_RUN_BEFORE_SUBMIT` | `true` | Simulate before submitting |
 | `USE_WEBSOCKET` | `false` | Enable WebSocket streaming |
 | `WS_MODE` | `event` | WebSocket mode: `event` or `tx` |
+| `CB_MAX_CONSECUTIVE_FAILURES` | `5` | Circuit breaker: halt after N consecutive failures |
+| `CB_MAX_CUMULATIVE_LOSS_MIST` | `1000000000` (1 SUI) | Circuit breaker: halt on cumulative loss |
+| `CB_COOLDOWN_MS` | `60000` (60s) | Circuit breaker: cooldown before auto-reset |
+| `MIN_GAS_BALANCE_MIST` | `100000000` (0.1 SUI) | Minimum wallet balance to continue trading |
 
 See [`docs/gas-economics.md`](docs/gas-economics.md) for `min_profit` tuning guidance.
 
@@ -261,11 +278,12 @@ All pinned to specific commit hashes for reproducible builds:
 
 ## Known Limitations
 
-- **Turbos/FlowX flash fee risk** -- `FlashSwapReceipt` has no public `pay_amount` reader. If these DEXes add flash fees, repayment will be short and the tx will abort (safe but blocks that strategy).
-- **DeepBook self-swap** -- `arb_deepbook_to_*` strategies borrow and swap against the same pool. Vault reserve reduction may affect pricing.
-- **Single-tick CLMM model** -- optimizer assumes trades stay within one tick range. Large trades crossing multiple ticks will have slightly less profit than simulated.
-- **No tri-hop scanning** -- tri-hop strategies are implemented on-chain but the scanner currently only detects two-hop opportunities.
-- **FlowX AMM** -- referenced in Rust types but no on-chain implementation (FlowX AMM router is not exposed in interface stubs).
+- **Turbos/FlowX flash fee risk** -- `FlashSwapReceipt` has no public `pay_amount` reader. Repayment uses the input `amount` directly. If these DEXes add flash fees, repayment will be short and the tx will abort (safe -- you lose gas, not principal). The circuit breaker catches repeated failures.
+- **DeepBook self-swap modeling** -- `arb_deepbook_to_*` strategies borrow and swap against the same pool. The flash loan reduces available liquidity, so actual pricing is slightly worse than the off-chain model predicts. Dry-run catches this; worst case is a failed tx (gas only).
+- **Single-tick CLMM model** -- optimizer assumes trades stay within one tick range. Large trades crossing multiple ticks will have slightly less profit than simulated. Capped at 100 SUI max trade.
+- **Aftermath slippage bypass** -- Aftermath's internal slippage check is set to `MAX_U64` (disabled). Defense-in-depth: `expected_out` is set to 1 (catches zero-output edge cases) and `profit::assert_profit()` enforces actual profitability on every trade.
+- **FlowX AMM disabled** -- referenced in Rust types but no on-chain Move implementation exists. Scanner returns `None` for all FlowX AMM strategy combos.
+- **Hot private key** -- signer loads Ed25519 key from env var. No HSM/KMS integration. Use a dedicated bot wallet with limited funds.
 
 ## License
 
