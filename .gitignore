@@ -1,1 +1,5 @@
 build/
+bot/node_modules/
+bot/dist/
+bot/.env
+deployments/
