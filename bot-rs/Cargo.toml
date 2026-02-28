@@ -60,6 +60,9 @@ hex = "0.4"
 # Base64
 base64 = "0.22"
 
+# Bech32 (Sui private key format)
+bech32 = "0.11"
+
 # WebSocket (for event streaming)
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures-util = "0.3"
