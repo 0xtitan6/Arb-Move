@@ -8,8 +8,8 @@ module arb_move::two_hop {
     use sui::clock::Clock;
 
     // ── DEX pool types ──
-    use cetus_clmm::pool::{Pool as CetusPool};
-    use cetus_clmm::config::GlobalConfig;
+    use cetusclmm::pool::{Pool as CetusPool};
+    use cetusclmm::config::GlobalConfig;
     use turbos_clmm::pool::{Pool as TurbosPool, Versioned};
     use deepbook::pool::{Pool as DeepBookPool};
     use token::deep::DEEP;

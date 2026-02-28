@@ -1,7 +1,13 @@
 use arb_types::decimals::normalize_price;
 use arb_types::opportunity::{ArbOpportunity, StrategyType};
 use arb_types::pool::{Dex, PoolState};
-use tracing::{debug, trace};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, info};
+
+/// Maximum spread (as fraction) considered realistic.
+/// Anything above this is a price normalization bug, not a real arb.
+/// Real cross-DEX arbs on Sui mainnet are typically 0.01%–5%.
+const MAX_REALISTIC_SPREAD: f64 = 0.50; // 50%
 
 /// Scans pool states for arbitrage opportunities.
 /// Performs O(n²) pairwise comparison of pools sharing the same token pair.
@@ -10,6 +16,8 @@ pub struct Scanner {
     pub min_profit_mist: u64,
     /// Maximum staleness in ms — skip pools older than this.
     pub max_staleness_ms: u64,
+    /// Cycle counter for periodic summary logging.
+    scan_count: AtomicU64,
 }
 
 impl Scanner {
@@ -17,6 +25,7 @@ impl Scanner {
         Self {
             min_profit_mist,
             max_staleness_ms: 5_000, // 5 seconds default
+            scan_count: AtomicU64::new(0),
         }
     }
 
@@ -29,6 +38,11 @@ impl Scanner {
             .as_millis() as u64;
 
         let mut opportunities = Vec::new();
+        let mut pairs_checked = 0u32;
+        let mut divergences = 0u32;
+        let mut near_misses = 0u32;
+        let mut best_spread = 0.0f64;
+        let mut best_pair_desc = String::new();
 
         // O(n²) pairwise comparison
         for i in 0..pools.len() {
@@ -47,6 +61,8 @@ impl Scanner {
                 if !same_pair(pool_a, pool_b) {
                     continue;
                 }
+
+                pairs_checked += 1;
 
                 // Check for price divergence
                 if let (Some(price_a), Some(price_b)) =
@@ -74,15 +90,38 @@ impl Scanner {
 
                     let spread = (norm_a - norm_b).abs() / norm_a.min(norm_b);
 
+                    // Track best spread for summary logging
+                    if spread > best_spread {
+                        best_spread = spread;
+                        best_pair_desc = format!("{}/{}", pool_a.dex, pool_b.dex);
+                    }
+
                     if spread > 0.001 {
                         // >0.1% spread — potential opportunity
-                        trace!(
-                            pool_a = %pool_a.object_id,
-                            pool_b = %pool_b.object_id,
+                        divergences += 1;
+
+                        // Sanity check: reject impossible spreads (normalization bugs)
+                        if spread > MAX_REALISTIC_SPREAD {
+                            debug!(
+                                dex_a = %pool_a.dex,
+                                dex_b = %pool_b.dex,
+                                spread = %format!("{:.2}%", spread * 100.0),
+                                pair = %format!("{}/{}",
+                                    pool_a.coin_type_a.rsplit("::").next().unwrap_or("?"),
+                                    pool_a.coin_type_b.rsplit("::").next().unwrap_or("?")),
+                                "Bogus spread rejected (likely decimal mismatch)"
+                            );
+                            continue;
+                        }
+
+                        debug!(
                             dex_a = %pool_a.dex,
                             dex_b = %pool_b.dex,
                             spread = %format!("{:.4}%", spread * 100.0),
-                            "Price divergence detected"
+                            pair = %format!("{}/{}",
+                                pool_a.coin_type_a.rsplit("::").next().unwrap_or("?"),
+                                pool_a.coin_type_b.rsplit("::").next().unwrap_or("?")),
+                            "Price divergence"
                         );
 
                         // Determine direction: buy cheap, sell expensive
@@ -108,6 +147,15 @@ impl Scanner {
                                     "Arb opportunity detected"
                                 );
 
+                                let mut type_args = vec![
+                                    flash_pool.coin_type_a.clone(),
+                                    flash_pool.coin_type_b.clone(),
+                                ];
+                                // Turbos pools need their fee tier type as an extra type arg
+                                if let Some(ft) = find_turbos_fee_type(&[flash_pool, sell_pool]) {
+                                    type_args.push(ft);
+                                }
+
                                 opportunities.push(ArbOpportunity {
                                     strategy,
                                     amount_in: est_amount,
@@ -118,17 +166,39 @@ impl Scanner {
                                         flash_pool.object_id.clone(),
                                         sell_pool.object_id.clone(),
                                     ],
-                                    type_args: vec![
-                                        flash_pool.coin_type_a.clone(),
-                                        flash_pool.coin_type_b.clone(),
-                                    ],
+                                    type_args,
                                     detected_at_ms: now_ms,
                                 });
+                            } else {
+                                near_misses += 1;
+                                debug!(
+                                    dex_a = %flash_pool.dex,
+                                    dex_b = %sell_pool.dex,
+                                    spread = %format!("{:.4}%", spread * 100.0),
+                                    est_profit = %est_profit,
+                                    min_profit = %self.min_profit_mist,
+                                    "Near miss — spread found but below threshold"
+                                );
                             }
                         }
                     }
                 }
             }
+        }
+
+        // Periodic summary log (every ~20 scans ≈ 30s at 1.5s interval)
+        let cycle = self.scan_count.fetch_add(1, Ordering::Relaxed);
+        if cycle % 20 == 0 {
+            info!(
+                cycle = cycle,
+                pairs_checked = pairs_checked,
+                divergences = divergences,
+                near_misses = near_misses,
+                opportunities = opportunities.len(),
+                best_spread = %format!("{:.4}%", best_spread * 100.0),
+                best_pair = %best_pair_desc,
+                "📊 Scan summary"
+            );
         }
 
         // Sort by expected profit descending
@@ -192,44 +262,50 @@ impl Scanner {
                         // Cross-rate: if pab * pbc * pca > 1.0, there's an arb
                         let cross_rate = pab * pbc * pca;
 
-                        if cross_rate > 1.003 {
-                            // >0.3% edge after typical fees
-                            if let Some(strategy) =
-                                resolve_tri_strategy(p1.dex, p2.dex, p3.dex)
+                        if cross_rate > 1.01 && cross_rate < (1.0 + MAX_REALISTIC_SPREAD) {
+                            // >1.0% edge for tri-hops (3 sequential swaps need larger edge
+                            // Try to find a valid pool ordering + strategy for these 3 pools
+                            if let Some((strategy, ordered_pools, mut type_args)) =
+                                resolve_tri_with_ordering(p1, p2, p3)
                             {
                                 let spread = cross_rate - 1.0;
-                                let est_amount = 1_000_000_000u64; // 1 SUI
+                                let est_amount = 5_000_000_000u64; // 5 SUI
+                                // Tri-hop slippage factor: use 0.15 (not 0.5) because
+                                // 3 sequential swaps compound price impact significantly.
+                                // 2-hop uses 0.5; tri-hop needs much more conservative estimate.
                                 let est_profit =
-                                    (est_amount as f64 * spread * 0.3) as u64; // conservative 30% capture
+                                    (est_amount as f64 * spread * 0.15) as u64;
+                                let tri_gas_estimate: u64 = 4_000_000;
 
                                 if est_profit > self.min_profit_mist {
                                     debug!(
                                         strategy = ?strategy,
                                         cross_rate = %format!("{:.6}", cross_rate),
+                                        est_profit = %est_profit,
                                         path = %format!("{} → {} → {} → {}",
-                                            token_a_from_p1.rsplit("::").next().unwrap_or("?"),
-                                            token_b.rsplit("::").next().unwrap_or("?"),
-                                            token_c_from_p2.rsplit("::").next().unwrap_or("?"),
-                                            token_a_from_p1.rsplit("::").next().unwrap_or("?")),
+                                            type_args[0].rsplit("::").next().unwrap_or("?"),
+                                            type_args[1].rsplit("::").next().unwrap_or("?"),
+                                            type_args[2].rsplit("::").next().unwrap_or("?"),
+                                            type_args[0].rsplit("::").next().unwrap_or("?")),
                                         "Tri-hop opportunity detected"
                                     );
+
+                                    // Turbos pools need their fee tier type as extra type arg
+                                    if let Some(ft) = find_turbos_fee_type(&[p1, p2, p3]) {
+                                        type_args.push(ft);
+                                    }
 
                                     opportunities.push(ArbOpportunity {
                                         strategy,
                                         amount_in: est_amount,
                                         expected_profit: est_profit,
-                                        estimated_gas: 8_000_000, // tri-hop uses more gas
-                                        net_profit: est_profit as i64 - 8_000_000,
-                                        pool_ids: vec![
-                                            p1.object_id.clone(),
-                                            p2.object_id.clone(),
-                                            p3.object_id.clone(),
-                                        ],
-                                        type_args: vec![
-                                            token_a_from_p1.clone(),
-                                            token_b.clone(),
-                                            token_c_from_p2.clone(),
-                                        ],
+                                        estimated_gas: tri_gas_estimate,
+                                        net_profit: est_profit as i64 - tri_gas_estimate as i64,
+                                        pool_ids: ordered_pools
+                                            .iter()
+                                            .map(|p| p.object_id.clone())
+                                            .collect(),
+                                        type_args,
                                         detected_at_ms: now_ms,
                                     });
                                 }
@@ -309,6 +385,91 @@ fn resolve_tri_strategy(dex1: Dex, dex2: Dex, dex3: Dex) -> Option<StrategyType>
     }
 }
 
+/// Find the Turbos fee type from a set of pools.
+/// Returns the fee_type of the first Turbos pool found (strategies have at most one).
+fn find_turbos_fee_type(pools: &[&PoolState]) -> Option<String> {
+    pools
+        .iter()
+        .find(|p| p.dex == Dex::Turbos)
+        .and_then(|p| p.fee_type.clone())
+}
+
+/// Resolve tri-hop strategy with validated pool ordering.
+///
+/// Tries to find a valid assignment of 3 pools to move function parameters.
+/// Returns `(strategy, ordered_pools, type_args)` if a valid ordering exists.
+///
+/// **a2b cycle** (v1): pool_ab<A,B> → pool_bc<B,C> → pool_ca<C,A> all using swap_a2b.
+/// **b2a third leg** (v2): pool_ab<A,B> → pool_bc<B,C> → pool_ac<A,C> where third leg uses swap_b2a.
+fn resolve_tri_with_ordering<'a>(
+    p1: &'a PoolState,
+    p2: &'a PoolState,
+    p3: &'a PoolState,
+) -> Option<(StrategyType, Vec<&'a PoolState>, Vec<String>)> {
+    let pools = [p1, p2, p3];
+    let perms: [[usize; 3]; 6] = [
+        [0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0],
+    ];
+
+    // --- Try 1: a2b cycle (v1 strategies) ---
+    // Constraints: p[0].coin_b == p[1].coin_a, p[1].coin_b == p[2].coin_a, p[2].coin_b == p[0].coin_a
+    for perm in &perms {
+        let pa = pools[perm[0]];
+        let pb = pools[perm[1]];
+        let pc = pools[perm[2]];
+
+        if pa.coin_type_b == pb.coin_type_a
+            && pb.coin_type_b == pc.coin_type_a
+            && pc.coin_type_b == pa.coin_type_a
+        {
+            if let Some(strategy) = resolve_tri_strategy(pa.dex, pb.dex, pc.dex) {
+                let type_args = vec![
+                    pa.coin_type_a.clone(), // A
+                    pa.coin_type_b.clone(), // B
+                    pb.coin_type_b.clone(), // C
+                ];
+                return Some((strategy, vec![pa, pb, pc], type_args));
+            }
+        }
+    }
+
+    // --- Try 2: b2a third leg (v2 strategies) ---
+    // Constraints: p[0].coin_b == p[1].coin_a (A→B chain, B→C chain)
+    //              p[2].coin_a == p[0].coin_a (both are A)
+    //              p[2].coin_b == p[1].coin_b (both are C)
+    // Third pool is Pool<A, C>, swap direction is b2a (C→A).
+    for perm in &perms {
+        let pa = pools[perm[0]];
+        let pb = pools[perm[1]];
+        let pc = pools[perm[2]];
+
+        if pa.coin_type_b == pb.coin_type_a
+            && pc.coin_type_a == pa.coin_type_a
+            && pc.coin_type_b == pb.coin_type_b
+        {
+            if let Some(strategy) = resolve_tri_strategy_v2(pa.dex, pb.dex, pc.dex) {
+                let type_args = vec![
+                    pa.coin_type_a.clone(), // A
+                    pa.coin_type_b.clone(), // B
+                    pb.coin_type_b.clone(), // C
+                ];
+                return Some((strategy, vec![pa, pb, pc], type_args));
+            }
+        }
+    }
+
+    None
+}
+
+/// Map a (dex1, dex2, dex3) triple to v2 strategy (third leg uses b2a).
+fn resolve_tri_strategy_v2(dex1: Dex, dex2: Dex, dex3: Dex) -> Option<StrategyType> {
+    match (dex1, dex2, dex3) {
+        (Dex::Cetus, Dex::Cetus, Dex::Cetus) => Some(StrategyType::TriCetusCetusCetusV2),
+        // Future: add more v2 variants as needed (e.g., TriCetusCetusTurbosV2)
+        _ => None,
+    }
+}
+
 /// Find the shared token between two pools.
 /// Returns `(shared_token, other_from_p1, other_from_p2)` where:
 /// - `shared_token` is the token both pools trade
@@ -371,7 +532,7 @@ mod tests {
             coin_type_b: "USDC".to_string(),
             sqrt_price: Some(sqrt_price),
             tick_index: None,
-            liquidity: Some(1_000_000),
+            liquidity: Some(1_000_000_000),
             fee_rate_bps: Some(30),
             reserve_a: None,
             reserve_b: None,
@@ -381,6 +542,7 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
+            fee_type: None,
         }
     }
 
@@ -559,12 +721,9 @@ mod tests {
         let mut small_spread = make_pool("0x1", Dex::Cetus, (1u128 << 64) * 98 / 100);
         let mut small_other = make_pool("0x2", Dex::Turbos, (1u128 << 64) * 103 / 100);
         let mut big_spread = make_pool("0x3", Dex::Cetus, (1u128 << 64) * 80 / 100);
-        let mut big_other = make_pool("0x4", Dex::DeepBook, (1u128 << 64) * 120 / 100);
-
-        // DeepBook needs reserves for price
-        big_other.sqrt_price = None;
-        big_other.reserve_a = Some(1_000_000);
-        big_other.reserve_b = Some(1_440_000); // price ~1.44 vs 0.64
+        // Use Turbos (CLMM) instead of DeepBook since DeepBook no longer
+        // falls back to vault reserves for price (it's a CLOB, not AMM).
+        let mut big_other = make_pool("0x4", Dex::Turbos, (1u128 << 64) * 120 / 100);
 
         for p in [&mut small_spread, &mut small_other, &mut big_spread, &mut big_other] {
             p.last_updated_ms = now;
@@ -614,6 +773,7 @@ mod tests {
             best_bid: None,
             best_ask: None,
             last_updated_ms: now,
+            fee_type: None,
         }
     }
 

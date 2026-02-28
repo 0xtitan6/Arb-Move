@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
 
         tokio::spawn(async move {
             loop {
-                if let Err(e) = poller.run(fallback_cache.clone()).await {
+                if let Err(e) = poller.run(fallback_cache.clone(), hb.clone()).await {
                     error!(error = %e, "Fallback poller failed — restarting in 5s");
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
 
         tokio::spawn(async move {
             loop {
-                if let Err(e) = poller.run(collector_cache.clone()).await {
+                if let Err(e) = poller.run(collector_cache.clone(), hb.clone()).await {
                     error!(error = %e, "Collector task failed — restarting in 5s");
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -289,8 +289,10 @@ async fn main() -> Result<()> {
                 None => continue,
             };
 
-            // 4. Always run optimizer via ternary search (local simulation)
-            {
+            // 4. Run optimizer via ternary search (local simulation)
+            // Tri-hop: optimizer only handles 2-pool arbs, so skip for tri-hop.
+            // The scanner's estimate + dry-runner validation is sufficient.
+            if best.pool_ids.len() == 2 {
                 let flash_pool = pools.iter().find(|p| p.object_id == best.pool_ids[0]);
                 let sell_pool = pools.iter().find(|p| p.object_id == best.pool_ids[1]);
 
@@ -312,6 +314,13 @@ async fn main() -> Result<()> {
                         best.net_profit = max_profit as i64 - best.estimated_gas as i64;
                     }
                 }
+            } else {
+                debug!(
+                    strategy = ?best.strategy,
+                    pools = %best.pool_ids.len(),
+                    est_profit = %best.expected_profit,
+                    "Tri-hop: skipping 2-pool optimizer, using scanner estimate"
+                );
             }
 
             // 4b. Post-optimization guards
@@ -348,6 +357,7 @@ async fn main() -> Result<()> {
                 expected_profit = %best.expected_profit,
                 net_profit = %best.net_profit,
                 min_profit_onchain = %(best.expected_profit * 9 / 10).max(1),
+                pools = ?best.pool_ids,
                 "Processing opportunity"
             );
 
@@ -372,10 +382,12 @@ async fn main() -> Result<()> {
                     }
                     Ok(false) => {
                         warn!("Opportunity no longer profitable after dry-run");
+                        circuit_breaker.record_failure(0, now_ms());
                         continue;
                     }
                     Err(e) => {
                         warn!(error = %e, "Dry-run failed");
+                        circuit_breaker.record_failure(0, now_ms());
                         continue;
                     }
                 }

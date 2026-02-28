@@ -223,6 +223,23 @@ mod tests {
     }
 
     #[test]
+    fn test_deepbook_parse_v3_value_field() {
+        // V3 PoolInner uses Balance<T> which serializes as { fields: { value: "..." } }
+        let content = json!({
+            "fields": {
+                "base_vault": { "fields": { "value": "921627040035451" } },
+                "quote_vault": { "fields": { "value": "943352018975" } },
+                "taker_fee": "1000"
+            }
+        });
+        let pool = deepbook::parse(&content, &test_meta(), 0).unwrap();
+        assert_eq!(pool.dex, arb_types::pool::Dex::DeepBook);
+        assert_eq!(pool.reserve_a, Some(921_627_040_035_451));
+        assert_eq!(pool.reserve_b, Some(943_352_018_975));
+        assert_eq!(pool.fee_rate_bps, Some(1000));
+    }
+
+    #[test]
     fn test_deepbook_parse_missing_vaults() {
         let content = json!({ "fields": {} });
         let pool = deepbook::parse(&content, &test_meta(), 0).unwrap();
@@ -234,13 +251,37 @@ mod tests {
 
     #[test]
     fn test_aftermath_parse_with_balances() {
+        // Aftermath normalized_balances are 18-decimal fixed-point strings.
+        // Parser derives synthetic reserves preserving the price ratio.
         let content = json!({
             "fields": { "normalized_balances": ["5000000", "10000000"] }
         });
         let pool = aftermath::parse(&content, &test_meta(), 0).unwrap();
         assert_eq!(pool.dex, arb_types::pool::Dex::Aftermath);
-        assert_eq!(pool.reserve_a, Some(5_000_000));
-        assert_eq!(pool.reserve_b, Some(10_000_000));
+        // ratio = 10M / 5M = 2.0 → reserve_a = 1B (virtual depth), reserve_b = 2B
+        assert_eq!(pool.reserve_a, Some(1_000_000_000));
+        assert_eq!(pool.reserve_b, Some(2_000_000_000));
+    }
+
+    #[test]
+    fn test_aftermath_parse_large_balances() {
+        // Real mainnet values: u128-scale that overflow u64
+        let content = json!({
+            "fields": {
+                "normalized_balances": [
+                    "27968666076858000000000000000000",
+                    "104839831283000000000000000000000"
+                ],
+                "fees_swap_in": ["2500000000000000"]
+            }
+        });
+        let pool = aftermath::parse(&content, &test_meta(), 0).unwrap();
+        assert_eq!(pool.reserve_a, Some(1_000_000_000));
+        // ratio ≈ 3.749 → reserve_b ≈ 3.749B
+        assert!(pool.reserve_b.unwrap() > 3_000_000_000);
+        assert!(pool.reserve_b.unwrap() < 4_000_000_000);
+        // 2500000000000000 / 1e18 * 10000 = 25 bps
+        assert_eq!(pool.fee_rate_bps, Some(25));
     }
 
     #[test]

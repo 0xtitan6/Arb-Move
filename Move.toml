@@ -1,13 +1,11 @@
 [package]
 name = "ArbMove"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024.beta"
+published-at = "0xda32b3a45a9c5250435187226db7ab2f3105e22ffde135b0bcbcf3530f502bd5"
 
 [dependencies]
-Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "mainnet-v1.54.2", override = true }
-MoveStdlib = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "mainnet-v1.54.2", override = true }
-SuiSystem = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-system", rev = "mainnet-v1.54.2", override = true }
-CetusClmm = { git = "https://github.com/CetusProtocol/cetus-clmm-interface.git", subdir = "sui/clmmpool", rev = "1f6a1cc79ec540d7219d8da1dd16e5cce140dfd8" }
+CetusClmm = { local = "deps/cetus_clmm" }
 TurbosCLMM = { git = "https://github.com/turbos-finance/turbos-sui-move-interface.git", subdir = "clmm", rev = "cff693265bfc41c7de2233afe31c9d7428adc9e1" }
 deepbook = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/deepbook", rev = "26281b9" }
 # Aftermath Finance (via Cetus aggregator interface stubs)
@@ -27,4 +25,4 @@ FlowxClmm = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = 
 FlowxAMM = { git = "https://github.com/CetusProtocol/aggregator.git", subdir = "packages/externals/flowx-amm", rev = "3ecb775d8b7b9fd3ead6d459bde5a85e22ab5782" }
 
 [addresses]
-arb_move = "0x0"
+arb_move = "0xda32b3a45a9c5250435187226db7ab2f3105e22ffde135b0bcbcf3530f502bd5"

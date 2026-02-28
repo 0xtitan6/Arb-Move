@@ -35,6 +35,8 @@ pub fn decimals_for_coin_type(coin_type: &str) -> u8 {
                 8 // wETH on Sui
             } else if coin_type.contains("c060006111016b8a") {
                 6 // USDT on Sui (wrapped)
+            } else if coin_type.contains("5d4b302506645c37ff") {
+                6 // wUSDC on Sui (Wormhole bridged USDC)
             } else {
                 9 // unknown wrapped — assume 9
             }
@@ -98,6 +100,22 @@ mod tests {
     }
 
     #[test]
+    fn test_wusdc_coin_wrapper() {
+        assert_eq!(
+            decimals_for_coin_type("0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN"),
+            6
+        );
+    }
+
+    #[test]
+    fn test_usdt_coin_wrapper() {
+        assert_eq!(
+            decimals_for_coin_type("0xc060006111016b8a020d5a60c6c01a0d64098d05e53b84771c0bbe50c7ca9588::coin::COIN"),
+            6
+        );
+    }
+
+    #[test]
     fn test_unknown_defaults_to_9() {
         assert_eq!(decimals_for_coin_type("0xabc::unknown::UNKNOWN"), 9);
     }
@@ -124,6 +142,16 @@ mod tests {
             "0x2::sui::SUI",
         );
         assert!((factor - 0.001).abs() < 1e-10, "USDC(6) / SUI(9) → 0.001, got {factor}");
+    }
+
+    #[test]
+    fn test_adjustment_factor_wusdc_sui() {
+        // wUSDC(6) as coin A, SUI(9) as coin B → factor = 10^(6-9) = 0.001
+        let factor = decimal_adjustment_factor(
+            "0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN",
+            "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        );
+        assert!((factor - 0.001).abs() < 1e-10, "wUSDC(6) / SUI(9) → 0.001, got {factor}");
     }
 
     #[test]

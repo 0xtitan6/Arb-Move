@@ -504,6 +504,7 @@ mod tests {
             liquidity: liq, fee_rate_bps: Some(30),
             reserve_a: ra, reserve_b: rb,
             best_bid: None, best_ask: None, last_updated_ms: 0,
+            fee_type: None,
         }
     }
 
@@ -556,6 +557,7 @@ mod tests {
             fee_rate_bps: Some(30),
             reserve_a: None, reserve_b: None,
             best_bid: None, best_ask: None, last_updated_ms: 0,
+            fee_type: None,
         }
     }
 
@@ -567,6 +569,7 @@ mod tests {
             fee_rate_bps: Some(30),
             reserve_a: Some(ra), reserve_b: Some(rb),
             best_bid: None, best_ask: None, last_updated_ms: 0,
+            fee_type: None,
         }
     }
 

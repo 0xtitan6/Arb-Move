@@ -31,6 +31,8 @@ pub enum StrategyType {
 
     // ── Tri-hop ──
     TriCetusCetusCetus,
+    /// V2: third leg uses b2a swap (Pool<A,C> instead of Pool<C,A>).
+    TriCetusCetusCetusV2,
     TriCetusCetusTurbos,
     TriCetusTurbosDeepBook,
     TriCetusDeepBookTurbos,
@@ -67,6 +69,7 @@ impl StrategyType {
             Self::TurbosToFlowxAmm => "arb_turbos_to_flowx_amm",
             Self::DeepBookToFlowxAmm => "arb_deepbook_to_flowx_amm",
             Self::TriCetusCetusCetus => "tri_cetus_cetus_cetus",
+            Self::TriCetusCetusCetusV2 => "tri_cetus_cetus_cetus_v2",
             Self::TriCetusCetusTurbos => "tri_cetus_cetus_turbos",
             Self::TriCetusTurbosDeepBook => "tri_cetus_turbos_deepbook",
             Self::TriCetusDeepBookTurbos => "tri_cetus_deepbook_turbos",
@@ -83,6 +86,7 @@ impl StrategyType {
     pub fn move_module(&self) -> &'static str {
         match self {
             Self::TriCetusCetusCetus
+            | Self::TriCetusCetusCetusV2
             | Self::TriCetusCetusTurbos
             | Self::TriCetusTurbosDeepBook
             | Self::TriCetusDeepBookTurbos
@@ -124,6 +128,7 @@ impl StrategyType {
             | Self::FlowxClmmToDeepBook => Dex::FlowxClmm,
 
             Self::TriCetusCetusCetus
+            | Self::TriCetusCetusCetusV2
             | Self::TriCetusCetusTurbos
             | Self::TriCetusTurbosDeepBook
             | Self::TriCetusDeepBookTurbos
