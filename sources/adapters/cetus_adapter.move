@@ -6,8 +6,8 @@ module arb_move::cetus_adapter {
     use sui::coin::{Self, Coin};
     use sui::clock::Clock;
 
-    use cetus_clmm::pool::{Self, Pool, FlashSwapReceipt};
-    use cetus_clmm::config::GlobalConfig;
+    use cetusclmm::pool::{Self, Pool, FlashSwapReceipt};
+    use cetusclmm::config::GlobalConfig;
 
     /// Minimum sqrt price for a2b swaps (price decreases).
     const MIN_SQRT_PRICE: u128 = 4295048016;

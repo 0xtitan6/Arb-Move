@@ -47,5 +47,6 @@ pub(crate) fn parse(content: &Value, meta: &PoolMeta, now_ms: u64) -> Result<Poo
         best_bid: None,
         best_ask: None,
         last_updated_ms: now_ms,
+        fee_type: None,
     })
 }

@@ -387,6 +387,20 @@ impl PtbBuilder {
             }
 
             // ═══════════════════════════════════════
+            //  Tri-hop: Cetus × Cetus × Cetus V2
+            //  (third leg uses b2a on Pool<A,C>)
+            // ═══════════════════════════════════════
+            StrategyType::TriCetusCetusCetusV2 => {
+                let mut a = self.base_args();
+                a.push(json!(self.cetus_global_config));
+                a.push(json!(opp.pool_ids[0])); // pool_ab (a2b)
+                a.push(json!(opp.pool_ids[1])); // pool_bc (a2b)
+                a.push(json!(opp.pool_ids[2])); // pool_ac (b2a)
+                a.extend(self.tail_args(&amount, &min_profit));
+                a
+            }
+
+            // ═══════════════════════════════════════
             //  Tri-hop: Cetus × Cetus × Turbos
             // ═══════════════════════════════════════
             StrategyType::TriCetusCetusTurbos => {

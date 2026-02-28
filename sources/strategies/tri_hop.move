@@ -7,8 +7,8 @@ module arb_move::tri_hop {
     use sui::clock::Clock;
 
     // ── DEX pool types ──
-    use cetus_clmm::pool::{Pool as CetusPool};
-    use cetus_clmm::config::GlobalConfig;
+    use cetusclmm::pool::{Pool as CetusPool};
+    use cetusclmm::config::GlobalConfig;
     use turbos_clmm::pool::{Pool as TurbosPool, Versioned};
     use deepbook::pool::{Pool as DeepBookPool};
     use token::deep::DEEP;
@@ -96,6 +96,67 @@ module arb_move::tri_hop {
         );
 
         events::emit_arb_executed(b"tri_ccc", owed, received);
+        transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  All-Cetus triangle V2: third leg uses b2a swap direction
+    //  For pools where the a2b cycle cannot close (e.g. all pools
+    //  have the same token as coin_type_b).
+    // ════════════════════════════════════════════════════════════
+
+    /// A→B on Cetus pool_ab (a2b), B→C on Cetus pool_bc (a2b), C→A on Cetus pool_ac (b2a).
+    /// Flash swap on pool_ab, repay with profit in A.
+    /// Pool ordering: pool_ac is Pool<A, C> — swap direction is b2a (C→A).
+    entry fun tri_cetus_cetus_cetus_v2<A, B, C>(
+        _admin: &AdminCap,
+        pause: &PauseFlag,
+        config: &GlobalConfig,
+        pool_ab: &mut CetusPool<A, B>,
+        pool_bc: &mut CetusPool<B, C>,
+        pool_ac: &mut CetusPool<A, C>,
+        amount: u64,
+        min_profit: u64,
+        clock: &Clock,
+        ctx: &mut TxContext,
+    ) {
+        assert!(amount > 0, E_ZERO_AMOUNT);
+        arb_move::admin::assert_not_paused(pause);
+
+        // 1. Flash swap A→B on pool_ab
+        let (recv_a, recv_b, receipt) = cetus_adapter::flash_swap_a2b<A, B>(
+            config, pool_ab, amount, clock,
+        );
+        balance::destroy_zero(recv_a);
+        let b_amount = balance::value(&recv_b);
+
+        // 2. Swap B→C on pool_bc (a2b)
+        let recv_c = cetus_adapter::swap_a2b<B, C>(
+            config, pool_bc, recv_b, b_amount, clock,
+        );
+        let c_amount = balance::value(&recv_c);
+
+        // 3. Swap C→A on pool_ac (b2a: C is coin_b input, A is coin_a output)
+        let recv_a_final = cetus_adapter::swap_b2a<A, C>(
+            config, pool_ac, recv_c, c_amount, clock,
+        );
+
+        // 4. Validate profit
+        let owed = cetus_adapter::swap_pay_amount(&receipt);
+        let mut coin_a_out = coin::from_balance(recv_a_final, ctx);
+        let received = coin::value(&coin_a_out);
+        profit::assert_profit(received, owed, min_profit);
+
+        // 5. Repay
+        let repay = coin::split(&mut coin_a_out, owed, ctx);
+        cetus_adapter::repay_flash_swap<A, B>(
+            config, pool_ab,
+            coin::into_balance(repay),
+            balance::zero<B>(),
+            receipt,
+        );
+
+        events::emit_arb_executed(b"tri_ccc2", owed, received);
         transfer::public_transfer(coin_a_out, tx_context::sender(ctx));
     }
 

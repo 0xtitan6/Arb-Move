@@ -86,6 +86,7 @@ mod tests {
             best_bid: None,
             best_ask: None,
             last_updated_ms: 0,
+            fee_type: None,
         }
     }
 

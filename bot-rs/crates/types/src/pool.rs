@@ -61,16 +61,33 @@ pub struct PoolState {
 
     /// Epoch timestamp of last update (ms since Unix epoch).
     pub last_updated_ms: u64,
+
+    /// Extra type parameter required by the pool's DEX (e.g., Turbos fee tier type).
+    /// Turbos pools have a `TurbosFee` phantom type in Pool<A, B, Fee>.
+    /// Must be passed as an additional type argument in Move calls.
+    pub fee_type: Option<String>,
 }
 
 impl PoolState {
+    /// Minimum liquidity for a CLMM pool to be considered usable.
+    /// Pools below this threshold return None from price_a_in_b(),
+    /// effectively excluding them from the scanner.
+    /// 10_000_000 ≈ negligible for any real swap.
+    const MIN_CLMM_LIQUIDITY: u128 = 10_000_000;
+
     /// Compute the effective price of A in terms of B.
-    /// For CLMM: derived from sqrt_price.
+    /// For CLMM: derived from sqrt_price (only if liquidity is above minimum).
     /// For AMM: reserve_b / reserve_a.
     /// For CLOB: midpoint of bid/ask.
     pub fn price_a_in_b(&self) -> Option<f64> {
         match self.dex {
             Dex::Cetus | Dex::Turbos | Dex::FlowxClmm => {
+                // Skip pools with zero or negligible liquidity — their sqrt_price
+                // is meaningless and creates phantom spreads in the scanner.
+                let liq = self.liquidity.unwrap_or(0);
+                if liq < Self::MIN_CLMM_LIQUIDITY {
+                    return None;
+                }
                 self.sqrt_price.map(|sp| {
                     let sp_f64 = sp as f64 / (1u128 << 64) as f64;
                     sp_f64 * sp_f64
@@ -83,17 +100,17 @@ impl PoolState {
                 }
             }
             Dex::DeepBook => {
+                // DeepBook is a CLOB — price comes from the order book, not vault reserves.
+                // Vault balances (base_vault/quote_vault) represent total deposited tokens
+                // from all limit orders and have NO relationship to market price.
+                // Using reserve_b/reserve_a here would produce garbage prices that create
+                // phantom million-percent spreads against accurate CLMM pool prices.
+                // Only return a price if we have actual bid/ask data.
                 match (self.best_bid, self.best_ask) {
                     (Some(bid), Some(ask)) => Some((bid + ask) / 2.0),
                     (Some(bid), None) => Some(bid),
                     (None, Some(ask)) => Some(ask),
-                    _ => {
-                        // Fallback: use vault reserves as rough price proxy
-                        match (self.reserve_a, self.reserve_b) {
-                            (Some(a), Some(b)) if a > 0 => Some(b as f64 / a as f64),
-                            _ => None,
-                        }
-                    }
+                    _ => None,
                 }
             }
         }
@@ -138,6 +155,7 @@ mod tests {
             best_bid: None,
             best_ask: None,
             last_updated_ms: 1000,
+            fee_type: None,
         }
     }
 
@@ -147,6 +165,7 @@ mod tests {
     fn test_clmm_price_from_sqrt_price() {
         let mut p = base_pool(Dex::Cetus);
         p.sqrt_price = Some(1u128 << 64); // sqrt_price = 1.0 in Q64.64
+        p.liquidity = Some(1_000_000_000); // sufficient liquidity
         let price = p.price_a_in_b().unwrap();
         assert!((price - 1.0).abs() < 0.01, "price should be ~1.0, got {price}");
     }
@@ -156,6 +175,7 @@ mod tests {
         // sqrt(2) * 2^64 ≈ 26087635650665564424 → price ≈ 2.0
         let mut p = base_pool(Dex::Turbos);
         p.sqrt_price = Some(26_087_635_650_665_564_424);
+        p.liquidity = Some(1_000_000_000); // sufficient liquidity
         let price = p.price_a_in_b().unwrap();
         assert!((price - 2.0).abs() < 0.01, "price should be ~2.0, got {price}");
     }
@@ -164,6 +184,22 @@ mod tests {
     fn test_clmm_price_none_when_no_sqrt() {
         let p = base_pool(Dex::FlowxClmm);
         assert!(p.price_a_in_b().is_none());
+    }
+
+    #[test]
+    fn test_clmm_price_none_when_zero_liquidity() {
+        let mut p = base_pool(Dex::Cetus);
+        p.sqrt_price = Some(1u128 << 64);
+        p.liquidity = Some(0); // zero liquidity
+        assert!(p.price_a_in_b().is_none(), "zero-liquidity pool should return None");
+    }
+
+    #[test]
+    fn test_clmm_price_none_when_low_liquidity() {
+        let mut p = base_pool(Dex::FlowxClmm);
+        p.sqrt_price = Some(1u128 << 64);
+        p.liquidity = Some(100); // below MIN_CLMM_LIQUIDITY
+        assert!(p.price_a_in_b().is_none(), "low-liquidity pool should return None");
     }
 
     #[test]
@@ -211,11 +247,16 @@ mod tests {
     }
 
     #[test]
-    fn test_deepbook_price_fallback_to_reserves() {
+    fn test_deepbook_no_fallback_to_reserves() {
+        // DeepBook is a CLOB — vault reserves don't reflect market price.
+        // Without bid/ask data, price should be None (not vault ratio).
         let mut p = base_pool(Dex::DeepBook);
         p.reserve_a = Some(1_000);
         p.reserve_b = Some(2_000);
-        assert!((p.price_a_in_b().unwrap() - 2.0).abs() < 0.001);
+        assert!(
+            p.price_a_in_b().is_none(),
+            "DeepBook should NOT use vault reserves as price proxy"
+        );
     }
 
     #[test]

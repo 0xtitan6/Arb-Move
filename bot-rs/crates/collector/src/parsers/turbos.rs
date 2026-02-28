@@ -49,5 +49,7 @@ pub(crate) fn parse(content: &Value, meta: &PoolMeta, now_ms: u64) -> Result<Poo
         best_bid: None,
         best_ask: None,
         last_updated_ms: now_ms,
+        // Fee type is set by the RPC poller after parsing (extracted from object type string)
+        fee_type: None,
     })
 }

@@ -67,20 +67,7 @@ impl Config {
             .unwrap_or_default()
             .split(',')
             .filter(|s| !s.trim().is_empty())
-            .filter_map(|entry| {
-                let parts: Vec<&str> = entry.trim().split(':').collect();
-                if parts.len() >= 4 {
-                    Some(PoolConfig {
-                        dex: parts[0].to_string(),
-                        pool_id: parts[1].to_string(),
-                        coin_type_a: parts[2].to_string(),
-                        coin_type_b: parts[3].to_string(),
-                    })
-                } else {
-                    eprintln!("WARN: Skipping malformed pool config: {entry}");
-                    None
-                }
-            })
+            .filter_map(|entry| parse_pool_entry(entry.trim()))
             .collect();
 
         Ok(Config {
@@ -125,6 +112,48 @@ impl Config {
     }
 }
 
+/// Parse a single pool config entry.
+///
+/// Format: `DEX:POOL_ID:COIN_TYPE_A:COIN_TYPE_B`
+///
+/// Coin types use `::` as a Move path separator (e.g., `0x2::sui::SUI`),
+/// so we can't naively split on `:`. Instead we:
+///   1. Extract DEX (first `:`)
+///   2. Extract POOL_ID (second `:`)
+///   3. Split the remaining string at `:0x` to separate the two coin types,
+///      since each coin type starts with a `0x` hex address.
+fn parse_pool_entry(entry: &str) -> Option<PoolConfig> {
+    // Step 1: DEX is before the first ':'
+    let colon1 = entry.find(':')?;
+    let dex = &entry[..colon1];
+
+    // Step 2: POOL_ID is between the first and second ':'
+    let rest1 = &entry[colon1 + 1..];
+    let colon2 = rest1.find(':')?;
+    let pool_id = &rest1[..colon2];
+
+    // Step 3: Remaining is "COIN_TYPE_A:COIN_TYPE_B"
+    // Both coin types start with "0x", so find ":0x" as the field boundary.
+    // This works because "::" in Move paths never produces ":0x" (modules are
+    // alphanumeric, not hex-prefixed).
+    let rest2 = &rest1[colon2 + 1..];
+    let boundary = rest2.find(":0x")?;
+    let coin_type_a = &rest2[..boundary];
+    let coin_type_b = &rest2[boundary + 1..]; // skip the ':'
+
+    if dex.is_empty() || pool_id.is_empty() || coin_type_a.is_empty() || coin_type_b.is_empty() {
+        eprintln!("WARN: Skipping malformed pool config: {entry}");
+        return None;
+    }
+
+    Some(PoolConfig {
+        dex: dex.to_string(),
+        pool_id: pool_id.to_string(),
+        coin_type_a: coin_type_a.to_string(),
+        coin_type_b: coin_type_b.to_string(),
+    })
+}
+
 fn env_var(name: &str) -> Result<String> {
     std::env::var(name).with_context(|| format!("Missing environment variable: {name}"))
 }
@@ -138,43 +167,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pool_config_parse_valid() {
-        let entry = "cetus:0xpool1:0x2::sui::SUI:0xusdc::usdc::USDC";
-        let parts: Vec<&str> = entry.split(':').collect();
-        assert!(parts.len() >= 4);
-        let pc = PoolConfig {
-            dex: parts[0].to_string(),
-            pool_id: parts[1].to_string(),
-            coin_type_a: parts[2].to_string(),
-            coin_type_b: parts[3].to_string(),
-        };
+    fn test_pool_config_parse_valid_full_types() {
+        let entry = "cetus:0xcf994611fd4c48e277ce3ffd4d4364c914af2c3cbb05f7bf6facd371de688630:0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI:0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+        let pc = parse_pool_entry(entry).expect("Should parse valid entry");
         assert_eq!(pc.dex, "cetus");
-        assert_eq!(pc.pool_id, "0xpool1");
+        assert_eq!(pc.pool_id, "0xcf994611fd4c48e277ce3ffd4d4364c914af2c3cbb05f7bf6facd371de688630");
+        assert_eq!(pc.coin_type_a, "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI");
+        assert_eq!(pc.coin_type_b, "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC");
+    }
+
+    #[test]
+    fn test_pool_config_parse_deep_sui() {
+        let entry = "turbos:0xbca476e3c744648c65b1fae5551b86be8ad7f482ca9c2268dad1d6b4fd0e2635:0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP:0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+        let pc = parse_pool_entry(entry).expect("Should parse DEEP/SUI");
+        assert_eq!(pc.dex, "turbos");
+        assert_eq!(pc.coin_type_a, "0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP");
+        assert_eq!(pc.coin_type_b, "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI");
+    }
+
+    #[test]
+    fn test_pool_config_parse_reversed() {
+        // The big Cetus pool has USDC/SUI ordering (reversed)
+        let entry = "cetus:0xb8d7d9e66a60c239e7a60110efcf8de6c705580ed924d0dde141f4a0e2c90105:0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC:0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+        let pc = parse_pool_entry(entry).expect("Should parse reversed pair");
+        assert_eq!(pc.coin_type_a, "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC");
+        assert_eq!(pc.coin_type_b, "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI");
     }
 
     #[test]
     fn test_pool_config_parse_malformed_skipped() {
-        let entries = "cetus:0xpool1,bad_entry,turbos:0xpool2:SUI:USDC";
-        let parsed: Vec<PoolConfig> = entries
-            .split(',')
-            .filter(|s| !s.trim().is_empty())
-            .filter_map(|entry| {
-                let parts: Vec<&str> = entry.trim().split(':').collect();
-                if parts.len() >= 4 {
-                    Some(PoolConfig {
-                        dex: parts[0].to_string(),
-                        pool_id: parts[1].to_string(),
-                        coin_type_a: parts[2].to_string(),
-                        coin_type_b: parts[3].to_string(),
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].dex, "turbos");
+        assert!(parse_pool_entry("bad_entry").is_none());
+        assert!(parse_pool_entry("cetus:0xpool1").is_none());
+        assert!(parse_pool_entry("cetus:0xpool1:onlyone").is_none());
+        assert!(parse_pool_entry("").is_none());
     }
 
     #[test]
@@ -189,25 +214,15 @@ mod tests {
 
     #[test]
     fn test_pool_config_multiple_valid() {
-        let entries = "cetus:0x1:SUI:USDC,turbos:0x2:SUI:USDC,deepbook:0x3:SUI:USDC";
+        let entries = "cetus:0x1:0x2::sui::SUI:0xdba3::usdc::USDC,turbos:0x2:0x2::sui::SUI:0xdba3::usdc::USDC,deepbook:0x3:0x2::sui::SUI:0xdba3::usdc::USDC";
         let parsed: Vec<PoolConfig> = entries
             .split(',')
             .filter(|s| !s.trim().is_empty())
-            .filter_map(|entry| {
-                let parts: Vec<&str> = entry.trim().split(':').collect();
-                if parts.len() >= 4 {
-                    Some(PoolConfig {
-                        dex: parts[0].to_string(),
-                        pool_id: parts[1].to_string(),
-                        coin_type_a: parts[2].to_string(),
-                        coin_type_b: parts[3].to_string(),
-                    })
-                } else {
-                    None
-                }
-            })
+            .filter_map(|entry| parse_pool_entry(entry.trim()))
             .collect();
         assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].coin_type_a, "0x2::sui::SUI");
+        assert_eq!(parsed[0].coin_type_b, "0xdba3::usdc::USDC");
     }
 
     #[test]
